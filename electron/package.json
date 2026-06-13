@@ -1,0 +1,34 @@
+{
+  "name": "stock-scanner-app",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Native macOS swing trading scanner",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "DEV=1 electron .",
+    "dist": "electron-builder --mac --dir"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.jonschenk.swingscanner",
+    "productName": "Swing Scanner",
+    "directories": {
+      "output": "../dist-app",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "app-config.json",
+      "package.json"
+    ],
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.finance",
+      "target": "dir"
+    }
+  }
+}

@@ -1,0 +1,105 @@
+"""FastAPI backend for the swing-trade scanner."""
+
+import asyncio
+import logging
+import time
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env from the project root before anything reads the environment.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
+from .ai import analyze_all
+from .config import ScanSettings, load_settings, save_settings
+from .scanner import scan_market
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger(__name__)
+
+app = FastAPI(title="Swing Scanner")
+
+# The Electron app loads the UI from file:// (and the Vite dev server from
+# localhost), so allow any origin. The server binds to 127.0.0.1 only.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+scan_state: dict = {
+    "status": "idle",  # idle | running | done | error
+    "progress": "",
+    "results": [],
+    "finished_at": None,
+    "error": None,
+}
+
+
+def _set_progress(message: str) -> None:
+    scan_state["progress"] = message
+    log.info(message)
+
+
+async def _run_scan() -> None:
+    settings = load_settings()
+    try:
+        _set_progress("Starting scan…")
+        candidates = await asyncio.to_thread(scan_market, settings, _set_progress)
+        _set_progress(f"{len(candidates)} stocks passed the scan")
+        await analyze_all(candidates, _set_progress)
+        scan_state["results"] = candidates
+        scan_state["status"] = "done"
+        scan_state["finished_at"] = time.time()
+        _set_progress(f"Scan complete — {len(candidates)} matches")
+    except Exception as e:
+        log.exception("Scan failed")
+        scan_state["status"] = "error"
+        scan_state["error"] = str(e)
+
+
+@app.get("/api/health")
+async def health() -> dict:
+    return {"status": "ok"}
+
+
+def _settings_dict(settings: ScanSettings) -> dict:
+    return {**settings.model_dump(), "max_price": round(settings.max_price, 2)}
+
+
+@app.get("/api/settings")
+async def get_settings() -> dict:
+    return _settings_dict(load_settings())
+
+
+@app.put("/api/settings")
+async def update_settings(settings: ScanSettings) -> dict:
+    if settings.max_price <= settings.min_price:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Max share price (capital x max-position-% = ${settings.max_price:,.0f}) "
+                f"must exceed the min price (${settings.min_price:,.0f}). "
+                "Raise your capital or max-position-%."
+            ),
+        )
+    save_settings(settings)
+    return _settings_dict(settings)
+
+
+@app.post("/api/scan", status_code=202)
+async def start_scan() -> dict:
+    if scan_state["status"] == "running":
+        raise HTTPException(status_code=409, detail="A scan is already running")
+    scan_state.update(status="running", progress="Queued…", error=None)
+    asyncio.create_task(_run_scan())
+    return {"status": "running"}
+
+
+@app.get("/api/scan/status")
+async def scan_status() -> dict:
+    return scan_state

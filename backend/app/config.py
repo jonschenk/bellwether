@@ -1,0 +1,56 @@
+"""Scan settings with JSON-file persistence."""
+
+import json
+from pathlib import Path
+
+from pydantic import BaseModel, Field
+
+SETTINGS_PATH = Path(__file__).resolve().parents[1] / "settings.json"
+
+
+class ScanSettings(BaseModel):
+    # --- account & risk ---
+    capital: float = Field(default=1000.0, gt=0)  # your trading capital ($)
+    risk_pct: float = Field(default=2.0, gt=0, le=100)  # max % of capital to risk per trade
+    max_position_pct: float = Field(default=50.0, gt=0, le=100)  # cap on price as % of capital
+    atr_stop_mult: float = Field(default=1.5, gt=0)  # stop = entry - mult * ATR
+    reward_mult: float = Field(default=3.0, gt=0)  # target = entry + mult * stop distance (R:R)
+
+    # --- liquidity / price ---
+    min_price: float = Field(default=15.0, ge=0)
+    min_avg_volume: int = Field(default=500_000, ge=0)
+
+    # --- trend strength ---
+    adx_min: float = Field(default=25.0, ge=0)  # ADX trend-strength floor (25 = trending)
+
+    # --- pullback timing (the entry window) ---
+    # Research consensus is a 40-60 "healthy pullback" band: cooled off from
+    # overbought, but not broken down. Leaders near their highs rarely dip below 50.
+    rsi_threshold: float = Field(default=60.0, gt=0, le=100)  # RSI must be BELOW this (pulled back)
+    rsi_floor: float = Field(default=40.0, ge=0, le=100)  # ...but ABOVE this (healthy, not broken)
+
+    # --- volatility ---
+    atr_pct_min: float = Field(default=2.0, ge=0)  # min daily range as % of price
+
+    # --- leadership: relative strength & proximity to highs (Minervini / Qullamaggie) ---
+    near_high_pct: float = Field(default=30.0, ge=0, le=100)  # max % below 52-week high
+    min_above_low_pct: float = Field(default=25.0, ge=0)  # min % above 52-week low
+    min_rs_rating: float = Field(default=70.0, ge=0, le=100)  # relative-strength percentile (0-100)
+
+    @property
+    def max_price(self) -> float:
+        """Highest share price you'd buy: capital x max-position-%."""
+        return self.capital * self.max_position_pct / 100
+
+
+def load_settings() -> ScanSettings:
+    if SETTINGS_PATH.exists():
+        try:
+            return ScanSettings(**json.loads(SETTINGS_PATH.read_text()))
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return ScanSettings()
+
+
+def save_settings(settings: ScanSettings) -> None:
+    SETTINGS_PATH.write_text(settings.model_dump_json(indent=2))

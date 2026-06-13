@@ -1,0 +1,24 @@
+# secrets
+.env
+
+# python
+backend/.venv/
+__pycache__/
+*.pyc
+backend/settings.json
+
+# node
+node_modules/
+frontend/dist/
+
+# packaged app build
+dist-app/
+electron/app-config.json
+electron/build/icon_1024.png
+electron/build/icon.iconset/
+
+# misc
+.DS_Store
+
+# local editor/agent config
+.claude/
