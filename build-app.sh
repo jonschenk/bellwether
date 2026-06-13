@@ -34,12 +34,17 @@ if [ -z "$APP" ]; then
   exit 1
 fi
 
+# Install straight to /Applications and ad-hoc sign (so it runs on Apple Silicon).
+echo "▸ Installing to /Applications…"
+osascript -e 'quit app "Swing Scanner"' 2>/dev/null || true
+rm -rf "/Applications/Swing Scanner.app"
+cp -R "$APP" "/Applications/Swing Scanner.app"
+codesign --force --deep --sign - "/Applications/Swing Scanner.app" >/dev/null 2>&1 || true
+
+# Remove the build output so a duplicate .app doesn't linger in Spotlight/Finder.
+rm -rf dist-app
+
 echo
-echo "✓ Built: $ROOT/$APP"
-echo
-echo "To install it:"
-echo "  • Drag 'Swing Scanner.app' into your Applications folder, then to the Dock."
-echo "  • Or run:  cp -R \"$APP\" /Applications/"
-echo
-echo "Opening it in Finder…"
-open -R "$APP"
+echo "✓ Installed: /Applications/Swing Scanner.app"
+echo "  Launch it from Spotlight or Launchpad, or drag it from Applications to your Dock."
+open -R "/Applications/Swing Scanner.app"

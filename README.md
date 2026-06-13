@@ -97,7 +97,7 @@ To turn this into a real `Swing Scanner.app` (custom icon, double-click to launc
 ./build-app.sh
 ```
 
-This builds the app into `dist-app/` and opens it in Finder. Drag **Swing Scanner.app** into your Applications folder, then drag it from there to your Dock. Double-clicking it starts the backend and opens the window automatically — no Terminal needed.
+This builds **Swing Scanner.app**, installs it straight to `/Applications` (ad-hoc signed, replacing any prior copy), removes the temporary build output so no duplicate lingers in Spotlight, and reveals it in Finder. Launch it from Spotlight or Launchpad, or drag it from Applications to your Dock. Double-clicking starts the backend (and Ollama, if used) and opens the window automatically — no Terminal needed.
 
 Notes:
 - The `.app` is a lightweight launcher around the backend/frontend **in this folder**, so keep this project where it is after building. (If you move it, just rerun `./build-app.sh`.)
