@@ -75,6 +75,8 @@ Set `AI_PROVIDER` in `.env` to switch:
 
 If Ollama isn't installed or running, the scan still works — cards just show a hint instead of AI analysis.
 
+**Performance:** news for all setups is prefetched concurrently (it used to be the hidden bottleneck), analyses run in parallel (`OLLAMA_CONCURRENCY`, default 2 — safe on 8 GB), and only the top **N** setups (Settings → *Auto-analyze top N*, default 10) are analyzed automatically; the rest are one click away. To go faster still, lower N, raise concurrency on a bigger machine, or switch to a hosted provider.
+
 ## Setup
 
 Prereqs: macOS, Python 3.10+, Node 18+.
@@ -123,11 +125,11 @@ The Electron app reuses an already-running backend if one is listening on 8765, 
 
 ## Usage
 
-1. Hit **Run Scan**. A live **elapsed timer** runs in the progress bar; when it finishes you'll see **"Loaded N setups in Xm Ys."** Most of that time is the local AI analyzing each match (~10–15s each on an M1); the market download itself is ~20s (curated) to ~3min (full market).
-2. Results show as cards sorted by **setup score**: price, RS rank, distance from 52w high, RSI, ADX, ATR% (all color-coded), the sized trade plan (shares/stop/target/risk), sentiment badge, AI summary, risks/catalysts, confidence.
-3. Loaded results **auto-refresh every 3 minutes** — a lightweight update that re-pulls live prices and recomputes indicators + position sizing for just the displayed tickers (no re-scan, no new AI calls, ~1s). The header shows the last-updated time.
-4. Click **Copy** on a card and paste the ticker into ThinkorSwim.
-5. Adjust the universe, risk rules, and all filter thresholds in **Settings** — saved to `backend/settings.json`.
+1. Hit **Run Scan**. The technical results appear as soon as the scan finishes (~20s curated, ~3min full market) — you don't wait for the AI. A live **elapsed timer** runs in the progress bar.
+2. Cards show sorted by **setup score**: price, RS rank, distance from 52w high, RSI, ADX, ATR% (all color-coded), the sized trade plan (shares/stop/target/risk). **Click anywhere on a card to copy its ticker** for ThinkorSwim.
+3. **AI streams in afterward.** Only the top **N** setups (default 10) are analyzed automatically — they fill in per-card with sentiment, summary, risks, and confidence. Lower-ranked cards show an **"⚡ Analyze with AI"** button so you only spend AI on what interests you. The AI runs in parallel with news prefetched concurrently, so it's far faster than one-at-a-time.
+4. Loaded results **auto-refresh every 3 minutes** — a lightweight update that re-pulls live prices and recomputes indicators + position sizing for just the displayed tickers (no re-scan, no new AI calls, ~1s). The header shows the last-updated time.
+5. Adjust the universe, **how many to auto-analyze**, risk rules, and all filter thresholds in **Settings** — saved to `backend/settings.json`.
 
 ## Scan universe
 

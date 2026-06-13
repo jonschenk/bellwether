@@ -1,6 +1,12 @@
 """AI analysis: fetches recent news per ticker and asks a model for a
 swing-trade read (summary, sentiment, risks/catalysts, confidence).
 
+Optimizations:
+  * news is prefetched concurrently so the model never waits on the network
+  * analyses run with bounded concurrency (not one-at-a-time)
+  * only the top-N setups are analyzed automatically; the rest are analyzed
+    on demand via analyze_single()
+
 Providers (set AI_PROVIDER in .env):
   - ollama     free local model via Ollama (default)
   - anthropic  Claude API (paid, needs ANTHROPIC_API_KEY)
@@ -20,7 +26,9 @@ log = logging.getLogger(__name__)
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
-MAX_CONCURRENT_REQUESTS = 4  # anthropic only; ollama runs sequentially
+ANTHROPIC_CONCURRENCY = 4
+DEFAULT_OLLAMA_CONCURRENCY = 2  # safe on an 8 GB M1 with a 3B model
+NEWS_CONCURRENCY = 8
 MAX_NEWS_ITEMS = 8
 
 ANALYSIS_SCHEMA = {
@@ -75,6 +83,17 @@ def _fetch_news(ticker: str) -> list[dict]:
     return news
 
 
+async def _prefetch_news(tickers: list[str]) -> dict[str, list[dict]]:
+    """Fetch every ticker's news concurrently so the model loop never stalls on I/O."""
+    sem = asyncio.Semaphore(NEWS_CONCURRENCY)
+
+    async def one(ticker: str):
+        async with sem:
+            return ticker, await asyncio.to_thread(_fetch_news, ticker)
+
+    return dict(await asyncio.gather(*(one(t) for t in tickers)))
+
+
 def _build_prompt(stock: dict, news: list[dict]) -> str:
     if news:
         news_block = "\n".join(
@@ -85,19 +104,19 @@ def _build_prompt(stock: dict, news: list[dict]) -> str:
     else:
         news_block = "(no recent news found for this ticker)"
 
-    return f"""You are assisting a swing trader who holds positions for 2-5 days. The stock below just passed a technical scan (uptrend pullback: price above 50 SMA, 20 SMA above 50 SMA, RSI(14) below 50).
+    return f"""You are assisting a swing trader who holds positions for 2-5 days. The stock below just passed a technical scan (a market leader in a confirmed uptrend, currently pulled back: high relative strength, near its 52-week high, price above the 50 & 200 SMA, RSI in a healthy pullback band).
 
 Ticker: {stock['ticker']}
 Current price: ${stock['price']}
-Relative strength rank: {stock['rs_rating']}/100 (vs the scanned universe)
-Distance from 52-week high: {stock['pct_from_high']}% below
+Relative strength rank: {stock.get('rs_rating', '?')}/100 (vs the scanned universe)
+Distance from 52-week high: {stock.get('pct_from_high', '?')}% below
 RSI(14): {stock['rsi']} (pulled back)
 ADX(14): {stock['adx']} (trend strength)
 ATR%: {stock['atr_pct']}% (daily volatility)
 Relative volume: {stock['rel_volume']}x its 21-day average
 20-day SMA: ${stock['sma20']}
 50-day SMA: ${stock['sma50']} (price is {stock['pct_above_sma50']}% above it)
-200-day SMA: ${stock['sma200']}
+200-day SMA: ${stock.get('sma200', '?')}
 21-day average volume: {stock['avg_volume']:,}
 
 Recent news headlines:
@@ -123,7 +142,22 @@ def _fallback(message: str) -> dict:
     }
 
 
-# ---------------------------------------------------------------- ollama (free, local)
+def _normalize(analysis: dict) -> dict:
+    """Small local models occasionally drift outside the enums — clamp them."""
+    if analysis.get("sentiment") not in ("Bullish", "Neutral", "Bearish"):
+        analysis["sentiment"] = "Neutral"
+    if analysis.get("confidence") not in ("High", "Medium", "Low"):
+        analysis["confidence"] = "Low"
+    analysis.setdefault("summary", "")
+    analysis.setdefault("risks_catalysts", "")
+    return analysis
+
+
+# ---------------------------------------------------------------- provider config
+
+
+def _provider() -> str:
+    return os.environ.get("AI_PROVIDER", "ollama").strip().lower()
 
 
 def _ollama_url() -> str:
@@ -132,6 +166,64 @@ def _ollama_url() -> str:
 
 def _ollama_model() -> str:
     return os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+
+
+def _ollama_concurrency() -> int:
+    try:
+        return max(1, int(os.environ.get("OLLAMA_CONCURRENCY", str(DEFAULT_OLLAMA_CONCURRENCY))))
+    except ValueError:
+        return DEFAULT_OLLAMA_CONCURRENCY
+
+
+def _anthropic_key() -> str:
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    return "" if key == "sk-ant-..." else key  # treat the .env.example placeholder as unset
+
+
+# ---------------------------------------------------------------- per-stock model calls
+
+
+async def _ollama_call(client: httpx.AsyncClient, model: str, stock: dict, news: list[dict]) -> dict:
+    try:
+        resp = await client.post(
+            f"{_ollama_url()}/api/chat",
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": _build_prompt(stock, news)}],
+                "stream": False,
+                "format": ANALYSIS_SCHEMA,  # Ollama structured outputs (v0.5+)
+                "options": {"temperature": 0.3},
+            },
+        )
+        resp.raise_for_status()
+        analysis = json.loads(resp.json()["message"]["content"])
+        analysis["news_count"] = len(news)
+        return _normalize(analysis)
+    except Exception:
+        log.exception("Ollama analysis failed for %s", stock["ticker"])
+        return _fallback("Local AI analysis failed — see backend logs.")
+
+
+async def _anthropic_call(client, stock: dict, news: list[dict]) -> dict:
+    import anthropic
+
+    try:
+        response = await client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=1024,
+            output_config={"format": {"type": "json_schema", "schema": ANALYSIS_SCHEMA}},
+            messages=[{"role": "user", "content": _build_prompt(stock, news)}],
+        )
+        text = next(b.text for b in response.content if b.type == "text")
+        analysis = json.loads(text)
+        analysis["news_count"] = len(news)
+        return analysis
+    except anthropic.APIError as e:
+        log.error("Claude analysis failed for %s: %s", stock["ticker"], e)
+        return _fallback(f"AI analysis failed ({e.__class__.__name__}). Check your API key and credits.")
+    except Exception:
+        log.exception("Unexpected AI failure for %s", stock["ticker"])
+        return _fallback("AI analysis failed unexpectedly — see backend logs.")
 
 
 async def _ollama_preflight(client: httpx.AsyncClient) -> str | None:
@@ -146,14 +238,16 @@ async def _ollama_preflight(client: httpx.AsyncClient) -> str | None:
             "(ollama serve), and pull a model: ollama pull " + model
         )
     installed = [m.get("name", "") for m in resp.json().get("models", [])]
-    # "llama3.1:8b" should match an installed "llama3.1:8b" or "llama3.1:latest" base
     base = model.split(":")[0]
     if not any(name == model or name.split(":")[0] == base for name in installed):
         return f"Model '{model}' not found in Ollama. Run: ollama pull {model}"
     return None
 
 
-async def _analyze_ollama(stocks: list[dict], progress) -> None:
+# ---------------------------------------------------------------- batch analysis
+
+
+async def _run_ollama(stocks: list[dict], news_map: dict, progress) -> None:
     model = _ollama_model()
     async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=5)) as client:
         error = await _ollama_preflight(client)
@@ -163,95 +257,90 @@ async def _analyze_ollama(stocks: list[dict], progress) -> None:
                 stock["ai"] = _fallback(error)
             return
 
-        # Local inference: run sequentially — parallel requests just thrash the GPU.
-        for i, stock in enumerate(stocks, 1):
-            progress(f"Analyzing with {model} (local)… {i}/{len(stocks)}: {stock['ticker']}")
-            news = await asyncio.to_thread(_fetch_news, stock["ticker"])
-            try:
-                resp = await client.post(
-                    f"{_ollama_url()}/api/chat",
-                    json={
-                        "model": model,
-                        "messages": [{"role": "user", "content": _build_prompt(stock, news)}],
-                        "stream": False,
-                        "format": ANALYSIS_SCHEMA,  # Ollama structured outputs (v0.5+)
-                        "options": {"temperature": 0.3},
-                    },
-                )
-                resp.raise_for_status()
-                analysis = json.loads(resp.json()["message"]["content"])
-                analysis["news_count"] = len(news)
-                stock["ai"] = _normalize(analysis)
-            except Exception:
-                log.exception("Ollama analysis failed for %s", stock["ticker"])
-                stock["ai"] = _fallback("Local AI analysis failed — see backend logs.")
+        sem = asyncio.Semaphore(_ollama_concurrency())
+        done = 0
+
+        async def worker(stock: dict):
+            nonlocal done
+            async with sem:
+                stock["ai"] = await _ollama_call(client, model, stock, news_map.get(stock["ticker"], []))
+                done += 1
+                progress(f"AI analyzed {done}/{len(stocks)} (local {model})…")
+
+        await asyncio.gather(*(worker(s) for s in stocks))
 
 
-def _normalize(analysis: dict) -> dict:
-    """Small local models occasionally drift outside the enums — clamp them."""
-    if analysis.get("sentiment") not in ("Bullish", "Neutral", "Bearish"):
-        analysis["sentiment"] = "Neutral"
-    if analysis.get("confidence") not in ("High", "Medium", "Low"):
-        analysis["confidence"] = "Low"
-    analysis.setdefault("summary", "")
-    analysis.setdefault("risks_catalysts", "")
-    return analysis
-
-
-# ---------------------------------------------------------------- anthropic (paid, optional)
-
-
-async def _analyze_one_anthropic(client, semaphore: asyncio.Semaphore, stock: dict) -> None:
+async def _run_anthropic(stocks: list[dict], news_map: dict, progress) -> None:
     import anthropic
-
-    async with semaphore:
-        news = await asyncio.to_thread(_fetch_news, stock["ticker"])
-        try:
-            response = await client.messages.create(
-                model=ANTHROPIC_MODEL,
-                max_tokens=1024,
-                output_config={"format": {"type": "json_schema", "schema": ANALYSIS_SCHEMA}},
-                messages=[{"role": "user", "content": _build_prompt(stock, news)}],
-            )
-            text = next(b.text for b in response.content if b.type == "text")
-            stock["ai"] = json.loads(text)
-            stock["ai"]["news_count"] = len(news)
-        except anthropic.APIError as e:
-            log.error("Claude analysis failed for %s: %s", stock["ticker"], e)
-            stock["ai"] = _fallback(f"AI analysis failed ({e.__class__.__name__}). Check your API key and credits.")
-        except Exception:
-            log.exception("Unexpected AI failure for %s", stock["ticker"])
-            stock["ai"] = _fallback("AI analysis failed unexpectedly — see backend logs.")
-
-
-async def _analyze_anthropic(stocks: list[dict], progress) -> None:
-    import anthropic
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key or api_key == "sk-ant-...":  # unset or untouched .env.example placeholder
-        for stock in stocks:
-            stock["ai"] = _fallback("AI_PROVIDER=anthropic but no ANTHROPIC_API_KEY set in .env.")
-        return
 
     client = anthropic.AsyncAnthropic()
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
-    progress(f"Analyzing {len(stocks)} stocks with Claude…")
-    await asyncio.gather(*(_analyze_one_anthropic(client, semaphore, s) for s in stocks))
+    sem = asyncio.Semaphore(ANTHROPIC_CONCURRENCY)
+    done = 0
+
+    async def worker(stock: dict):
+        nonlocal done
+        async with sem:
+            stock["ai"] = await _anthropic_call(client, stock, news_map.get(stock["ticker"], []))
+            done += 1
+            progress(f"AI analyzed {done}/{len(stocks)} with Claude…")
+
+    await asyncio.gather(*(worker(s) for s in stocks))
 
 
-# ---------------------------------------------------------------- entry point
+# ---------------------------------------------------------------- entry points
 
 
-async def analyze_all(stocks: list[dict], progress=lambda msg: None) -> None:
-    """Mutates each stock dict in place, adding an 'ai' key."""
+async def analyze_all(stocks: list[dict], progress=lambda msg: None, limit: int | None = None) -> None:
+    """Analyze the top `limit` setups (by score; they're pre-sorted) in place.
+    The remaining setups are flagged for on-demand analysis (analyze_single)."""
     if not stocks:
         return
 
-    provider = os.environ.get("AI_PROVIDER", "ollama").strip().lower()
+    targets = stocks if limit is None else stocks[:limit]
+    for stock in stocks[len(targets):]:
+        if not stock.get("ai"):
+            stock["ai_status"] = "idle"  # frontend shows an "Analyze" button
+    if not targets:
+        return
+
+    provider = _provider()
     if provider == "none":
-        for stock in stocks:
+        for stock in targets:
             stock["ai"] = _fallback("AI analysis disabled (AI_PROVIDER=none).")
-    elif provider == "anthropic":
-        await _analyze_anthropic(stocks, progress)
+        return
+    if provider == "anthropic" and not _anthropic_key():
+        for stock in targets:
+            stock["ai"] = _fallback("AI_PROVIDER=anthropic but no ANTHROPIC_API_KEY set in .env.")
+        return
+
+    progress(f"Fetching news & analyzing top {len(targets)} setups…")
+    news_map = await _prefetch_news([s["ticker"] for s in targets])
+    if provider == "anthropic":
+        await _run_anthropic(targets, news_map, progress)
     else:
-        await _analyze_ollama(stocks, progress)
+        await _run_ollama(targets, news_map, progress)
+
+
+async def analyze_single(stock: dict) -> None:
+    """On-demand analysis for one stock (user clicked Analyze)."""
+    provider = _provider()
+    if provider == "none":
+        stock["ai"] = _fallback("AI analysis disabled (AI_PROVIDER=none).")
+        return
+
+    news = await asyncio.to_thread(_fetch_news, stock["ticker"])
+    if provider == "anthropic":
+        if not _anthropic_key():
+            stock["ai"] = _fallback("AI_PROVIDER=anthropic but no ANTHROPIC_API_KEY set in .env.")
+            return
+        import anthropic
+
+        stock["ai"] = await _anthropic_call(anthropic.AsyncAnthropic(), stock, news)
+    else:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=5)) as client:
+            error = await _ollama_preflight(client)
+            if error:
+                stock["ai"] = _fallback(error)
+                return
+            stock["ai"] = await _ollama_call(client, _ollama_model(), stock, news)
+    stock.pop("ai_status", None)

@@ -31,7 +31,8 @@ if grep -qE '^AI_PROVIDER=ollama' .env 2>/dev/null; then
   else
     if ! curl -s --max-time 1 http://127.0.0.1:11434/api/tags >/dev/null; then
       echo "▸ Starting Ollama server…"
-      (ollama serve &>/dev/null &)
+      # OLLAMA_NUM_PARALLEL lets the backend analyze 2 stocks at once (faster AI).
+      (OLLAMA_NUM_PARALLEL=2 ollama serve &>/dev/null &)
       sleep 2
     fi
     if ! ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$OLLAMA_MODEL"; then

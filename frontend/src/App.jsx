@@ -6,6 +6,7 @@ import {
   saveSettings,
   startScan,
   refreshScan,
+  analyzeTicker,
 } from "./api.js";
 import StockCard from "./components/StockCard.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
@@ -130,6 +131,25 @@ export default function App() {
       setCapital(String(settings.capital)); // revert
     }
   };
+
+  // On-demand AI for a single card (the ones beyond the auto-analyzed top N).
+  const onAnalyze = useCallback(async (ticker) => {
+    setScan((s) => ({
+      ...s,
+      results: s.results.map((r) => (r.ticker === ticker ? { ...r, ai_status: "pending" } : r)),
+    }));
+    try {
+      const state = await analyzeTicker(ticker);
+      setScan(state);
+    } catch {
+      setScan((s) => ({
+        ...s,
+        results: s.results.map((r) =>
+          r.ticker === ticker && !r.ai ? { ...r, ai_status: "idle" } : r,
+        ),
+      }));
+    }
+  }, []);
 
   const onRunScan = async () => {
     setError(null);
@@ -260,7 +280,7 @@ export default function App() {
 
         <div className="grid">
           {results.map((stock) => (
-            <StockCard key={stock.ticker} stock={stock} />
+            <StockCard key={stock.ticker} stock={stock} onAnalyze={onAnalyze} />
           ))}
         </div>
       </main>

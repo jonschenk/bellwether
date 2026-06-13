@@ -25,11 +25,13 @@ function formatVolume(v) {
   return String(v);
 }
 
-export default function StockCard({ stock }) {
+export default function StockCard({ stock, onAnalyze }) {
   const [copied, setCopied] = useState(false);
   const ai = stock.ai ?? {};
   const plan = stock.plan ?? {};
-  const analyzing = !stock.ai; // technicals loaded, AI not back yet
+  const hasAi = !!stock.ai;
+  const idle = !hasAi && stock.ai_status === "idle"; // on-demand: not analyzed yet
+  const analyzing = !hasAi && !idle; // queued/in-progress
   const sentiment = ai.sentiment ?? "Neutral";
 
   const copyTicker = async () => {
@@ -66,12 +68,14 @@ export default function StockCard({ stock }) {
           <span className="score" title="Setup score: relative strength + trend + pullback + volatility">
             {stock.setup_score}
           </span>
-          {analyzing ? (
+          {hasAi ? (
+            <span className={`badge sentiment-${sentiment.toLowerCase()}`}>{sentiment}</span>
+          ) : idle ? (
+            <span className="badge idle-badge">AI on-demand</span>
+          ) : (
             <span className="badge analyzing">
               <span className="spinner tiny" /> Analyzing
             </span>
-          ) : (
-            <span className={`badge sentiment-${sentiment.toLowerCase()}`}>{sentiment}</span>
           )}
         </div>
       </div>
@@ -143,28 +147,42 @@ export default function StockCard({ stock }) {
         </div>
       </div>
 
-      <p className={`summary ${analyzing ? "summary-pending" : ai.error ? "muted" : ""}`}>
-        {analyzing ? "Awaiting AI analysis…" : ai.summary}
-      </p>
+      {idle ? (
+        <button
+          className="analyze-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAnalyze?.(stock.ticker);
+          }}
+        >
+          ⚡ Analyze with AI
+        </button>
+      ) : (
+        <>
+          <p className={`summary ${analyzing ? "summary-pending" : ai.error ? "muted" : ""}`}>
+            {analyzing ? "Awaiting AI analysis…" : ai.summary}
+          </p>
 
-      {!analyzing && ai.risks_catalysts && (
-        <p className="risks">
-          <span className="risks-label">Risks / Catalysts:</span> {ai.risks_catalysts}
-        </p>
+          {hasAi && ai.risks_catalysts && (
+            <p className="risks">
+              <span className="risks-label">Risks / Catalysts:</span> {ai.risks_catalysts}
+            </p>
+          )}
+
+          <div className="card-foot">
+            {hasAi ? (
+              <span className={`badge confidence-${(ai.confidence ?? "low").toLowerCase()}`}>
+                {ai.confidence ?? "—"} confidence
+              </span>
+            ) : (
+              <span className="badge confidence-pending">confidence pending</span>
+            )}
+            {hasAi && typeof ai.news_count === "number" && (
+              <span className="muted small">{ai.news_count} news items</span>
+            )}
+          </div>
+        </>
       )}
-
-      <div className="card-foot">
-        {analyzing ? (
-          <span className="badge confidence-pending">confidence pending</span>
-        ) : (
-          <span className={`badge confidence-${(ai.confidence ?? "low").toLowerCase()}`}>
-            {ai.confidence ?? "—"} confidence
-          </span>
-        )}
-        {!analyzing && typeof ai.news_count === "number" && (
-          <span className="muted small">{ai.news_count} news items</span>
-        )}
-      </div>
     </article>
   );
 }

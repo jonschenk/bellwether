@@ -2,7 +2,10 @@ import { useEffect, useState } from "react";
 import { getSettings, saveSettings } from "../api.js";
 
 const FIELDS = {
-  scan: [{ key: "max_results", label: "Max setups to show", min: 1, step: 5, max: 200 }],
+  scan: [
+    { key: "max_results", label: "Max setups to show", min: 1, step: 5, max: 200 },
+    { key: "ai_top_n", label: "Auto-analyze top N (rest on-demand)", min: 1, step: 5, max: 200 },
+  ],
   account: [
     { key: "capital", label: "Capital ($)", min: 1, step: 100 },
     { key: "risk_pct", label: "Risk per trade (%)", min: 0.1, step: 0.5, max: 100 },

@@ -11,7 +11,8 @@ SETTINGS_PATH = Path(__file__).resolve().parents[1] / "settings.json"
 class ScanSettings(BaseModel):
     # --- scan scope ---
     universe: str = Field(default="full")  # "full" (whole US market) or "curated" (tickers.txt)
-    max_results: int = Field(default=30, ge=1, le=200)  # top-N setups to keep & AI-analyze
+    max_results: int = Field(default=30, ge=1, le=200)  # top-N setups to keep
+    ai_top_n: int = Field(default=10, ge=1, le=200)  # auto-analyze top-N; rest are on-demand
 
     # --- account & risk ---
     capital: float = Field(default=1000.0, gt=0)  # your trading capital ($)

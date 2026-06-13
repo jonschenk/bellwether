@@ -22,5 +22,7 @@ export const saveSettings = (settings) =>
   request("/api/settings", { method: "PUT", body: JSON.stringify(settings) });
 export const startScan = () => request("/api/scan", { method: "POST" });
 export const refreshScan = () => request("/api/refresh", { method: "POST" });
+export const analyzeTicker = (ticker) =>
+  request("/api/analyze", { method: "POST", body: JSON.stringify({ ticker }) });
 export const getScanStatus = () => request("/api/scan/status");
 export const getHealth = () => request("/api/health");

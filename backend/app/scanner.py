@@ -306,6 +306,8 @@ def refresh_results(settings: ScanSettings, prior_results: list[dict]) -> list[d
                 updated.append(prior)  # keep the prior row if the refresh failed
             else:
                 row["ai"] = prior.get("ai")  # preserve the AI analysis from the scan
+                if prior.get("ai_status"):  # preserve on-demand "idle" flag
+                    row["ai_status"] = prior["ai_status"]
                 updated.append(row)
 
     updated.sort(key=lambda r: r["setup_score"], reverse=True)

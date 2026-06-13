@@ -12,8 +12,9 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-from .ai import analyze_all
+from .ai import analyze_all, analyze_single
 from .config import ScanSettings, load_settings, save_settings
 from .scanner import refresh_results, scan_market
 
@@ -62,7 +63,7 @@ async def _run_scan() -> None:
         if candidates:
             scan_state["status"] = "analyzing"
             _set_progress(f"{len(candidates)} setups found — running AI analysis…")
-            await analyze_all(candidates, _set_progress)
+            await analyze_all(candidates, _set_progress, limit=settings.ai_top_n)
         scan_state["status"] = "done"
         scan_state["finished_at"] = time.time()
         _set_progress(f"Scan complete — {len(candidates)} matches")
@@ -136,6 +137,24 @@ async def refresh_scan() -> dict:
         log.exception("Refresh failed")
     finally:
         scan_state["refreshing"] = False
+    return scan_state
+
+
+class AnalyzeRequest(BaseModel):
+    ticker: str
+
+
+@app.post("/api/analyze")
+async def analyze_one(req: AnalyzeRequest) -> dict:
+    """On-demand AI analysis for a single already-scanned ticker."""
+    rows = scan_state.get("results") or []
+    stock = next((r for r in rows if r["ticker"] == req.ticker), None)
+    if stock is None:
+        raise HTTPException(status_code=404, detail="Ticker is not in the current results")
+    if stock.get("ai"):
+        return scan_state  # already analyzed
+    stock["ai_status"] = "pending"
+    await analyze_single(stock)
     return scan_state
 
 
