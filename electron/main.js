@@ -6,6 +6,7 @@ const http = require("http");
 
 const BACKEND_PORT = 8765;
 const HEALTH_URL = `http://127.0.0.1:${BACKEND_PORT}/api/health`;
+const OLLAMA_URL = "http://127.0.0.1:11434/api/tags";
 
 // Where the project (backend venv + frontend build) lives. In dev that's the
 // parent dir; in a packaged .app __dirname is inside the bundle, so we read the
@@ -26,6 +27,60 @@ function resolveProjectRoot() {
 const ROOT = resolveProjectRoot();
 
 let backendProcess = null;
+let ollamaProcess = null; // only set if WE started Ollama (so we only kill what we started)
+
+// --- Ollama (local AI) ---
+
+// A GUI app launched from Finder has a minimal PATH, so look in the usual spots.
+function findOllama() {
+  const candidates = ["/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"];
+  return candidates.find((p) => fs.existsSync(p)) || null;
+}
+
+// Read AI_PROVIDER from .env so we don't start Ollama when the user picked
+// Claude or disabled AI entirely.
+function aiProvider() {
+  try {
+    const env = fs.readFileSync(path.join(ROOT, ".env"), "utf8");
+    const m = env.match(/^\s*AI_PROVIDER\s*=\s*(\w+)/m);
+    return m ? m[1].toLowerCase() : "ollama";
+  } catch {
+    return "ollama";
+  }
+}
+
+function checkOllama() {
+  return new Promise((resolve) => {
+    const req = http.get(OLLAMA_URL, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    req.on("error", () => resolve(false));
+    req.setTimeout(800, () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+// Ensure Ollama is running (start it if needed). Fire-and-forget — the AI phase
+// only happens later when the user runs a scan, and the backend handles a
+// not-yet-ready Ollama gracefully.
+async function ensureOllama() {
+  if (aiProvider() !== "ollama") return; // not using local AI
+  if (await checkOllama()) return; // already running (don't adopt/kill it)
+  const bin = findOllama();
+  if (!bin) {
+    console.warn("Ollama not found; AI analysis will be unavailable until it's installed.");
+    return;
+  }
+  // OLLAMA_NUM_PARALLEL lets the backend analyze 2 stocks at once.
+  ollamaProcess = spawn(bin, ["serve"], {
+    env: { ...process.env, OLLAMA_NUM_PARALLEL: "2" },
+    stdio: "ignore",
+  });
+  ollamaProcess.on("error", (e) => console.error("Failed to start Ollama:", e.message));
+}
 
 function checkHealth() {
   return new Promise((resolve) => {
@@ -98,6 +153,10 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // Start the local AI server (if used and not already up) — independent of the
+  // backend, so kick it off without blocking startup.
+  ensureOllama();
+
   // Reuse an already-running backend (e.g. started manually for debugging),
   // otherwise spawn our own.
   const alreadyRunning = await checkHealth();
@@ -124,6 +183,7 @@ app.whenReady().then(async () => {
 app.on("before-quit", () => {
   app.isQuitting = true;
   if (backendProcess) backendProcess.kill();
+  if (ollamaProcess) ollamaProcess.kill(); // only set if we started it
 });
 
 app.on("window-all-closed", () => {

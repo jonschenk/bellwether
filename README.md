@@ -101,6 +101,7 @@ This builds the app into `dist-app/` and opens it in Finder. Drag **Swing Scanne
 
 Notes:
 - The `.app` is a lightweight launcher around the backend/frontend **in this folder**, so keep this project where it is after building. (If you move it, just rerun `./build-app.sh`.)
+- On launch it starts the Python backend **and** ensures Ollama is running (only if `AI_PROVIDER=ollama` and it isn't already up). If you have the Ollama menubar app installed, that keeps Ollama running anyway.
 - It's signed ad-hoc (no paid Apple Developer account needed). The first launch may take a few seconds while the backend boots.
 - To change the icon, edit `electron/build/make_icon.py`, then rebuild.
 
