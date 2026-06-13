@@ -123,10 +123,11 @@ The Electron app reuses an already-running backend if one is listening on 8765, 
 
 ## Usage
 
-1. Hit **Run Scan**. A full S&P 500 scan takes ~1–3 minutes (data download) plus a few seconds of AI analysis per batch.
-2. Results show as cards sorted by RSI (most pulled-back first): price, RSI (color-coded), volume, sentiment badge, AI summary, risks/catalysts, confidence.
-3. Click **Copy** on a card and paste the ticker into ThinkorSwim.
-4. Adjust max price, volume floor, min price, and RSI threshold in **Settings** — saved to `backend/settings.json`.
+1. Hit **Run Scan**. A live **elapsed timer** runs in the progress bar; when it finishes you'll see **"Loaded N setups in Xm Ys."** Most of that time is the local AI analyzing each match (~10–15s each on an M1); the market download itself is ~20s (curated) to ~3min (full market).
+2. Results show as cards sorted by **setup score**: price, RS rank, distance from 52w high, RSI, ADX, ATR% (all color-coded), the sized trade plan (shares/stop/target/risk), sentiment badge, AI summary, risks/catalysts, confidence.
+3. Loaded results **auto-refresh every 3 minutes** — a lightweight update that re-pulls live prices and recomputes indicators + position sizing for just the displayed tickers (no re-scan, no new AI calls, ~1s). The header shows the last-updated time.
+4. Click **Copy** on a card and paste the ticker into ThinkorSwim.
+5. Adjust the universe, risk rules, and all filter thresholds in **Settings** — saved to `backend/settings.json`.
 
 ## Scan universe
 

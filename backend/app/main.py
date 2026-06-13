@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .ai import analyze_all
 from .config import ScanSettings, load_settings, save_settings
-from .scanner import scan_market
+from .scanner import refresh_results, scan_market
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -35,7 +35,10 @@ scan_state: dict = {
     "status": "idle",  # idle | running | done | error
     "progress": "",
     "results": [],
-    "finished_at": None,
+    "started_at": None,  # epoch seconds the current/last scan began
+    "finished_at": None,  # epoch seconds it completed
+    "refreshed_at": None,  # epoch seconds of the last lightweight refresh
+    "refreshing": False,
     "error": None,
 }
 
@@ -95,9 +98,36 @@ async def update_settings(settings: ScanSettings) -> dict:
 async def start_scan() -> dict:
     if scan_state["status"] == "running":
         raise HTTPException(status_code=409, detail="A scan is already running")
-    scan_state.update(status="running", progress="Queued…", error=None)
+    scan_state.update(
+        status="running",
+        progress="Queued…",
+        error=None,
+        started_at=time.time(),
+        finished_at=None,
+        refreshed_at=None,
+    )
     asyncio.create_task(_run_scan())
     return {"status": "running"}
+
+
+@app.post("/api/refresh")
+async def refresh_scan() -> dict:
+    """Cheap live update of the displayed setups only (no re-scan, no AI)."""
+    if scan_state["status"] == "running" or scan_state["refreshing"]:
+        return scan_state
+    rows = scan_state.get("results") or []
+    if not rows:
+        return scan_state
+    scan_state["refreshing"] = True
+    try:
+        settings = load_settings()
+        scan_state["results"] = await asyncio.to_thread(refresh_results, settings, rows)
+        scan_state["refreshed_at"] = time.time()
+    except Exception:
+        log.exception("Refresh failed")
+    finally:
+        scan_state["refreshing"] = False
+    return scan_state
 
 
 @app.get("/api/scan/status")

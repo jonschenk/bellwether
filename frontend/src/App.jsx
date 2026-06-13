@@ -1,9 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getScanStatus, getHealth, getSettings, saveSettings, startScan } from "./api.js";
+import {
+  getScanStatus,
+  getHealth,
+  getSettings,
+  saveSettings,
+  startScan,
+  refreshScan,
+} from "./api.js";
 import StockCard from "./components/StockCard.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 
 const POLL_INTERVAL_MS = 1500;
+const REFRESH_INTERVAL_MS = 180_000; // auto-refresh loaded setups every 3 min
+
+function formatDuration(totalSeconds) {
+  const s = Math.max(0, Math.round(totalSeconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
+function formatClock(epochSeconds) {
+  return new Date(epochSeconds * 1000).toLocaleTimeString();
+}
 
 export default function App() {
   const [backendUp, setBackendUp] = useState(null);
@@ -12,7 +31,9 @@ export default function App() {
   const [capital, setCapital] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState(null);
+  const [now, setNow] = useState(Date.now() / 1000); // ticks each second while running
   const pollRef = useRef(null);
+  const refreshingRef = useRef(false);
 
   const stopPolling = () => {
     if (pollRef.current) {
@@ -64,6 +85,37 @@ export default function App() {
     return stopPolling;
   }, [beginPolling, refreshSettings]);
 
+  const running = scan.status === "running";
+
+  // Live elapsed clock — only ticks while a scan is running.
+  useEffect(() => {
+    if (!running) return;
+    setNow(Date.now() / 1000);
+    const id = setInterval(() => setNow(Date.now() / 1000), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+
+  // Auto-refresh the loaded setups every few minutes (cheap: only the displayed
+  // tickers, no AI, no re-scan). Active only when a finished scan has results.
+  const doRefresh = useCallback(async () => {
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
+    try {
+      const state = await refreshScan();
+      setScan(state);
+    } catch {
+      /* refresh is best-effort */
+    } finally {
+      refreshingRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (scan.status !== "done" || (scan.results ?? []).length === 0) return;
+    const id = setInterval(doRefresh, REFRESH_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [scan.status, scan.results, doRefresh]);
+
   const commitCapital = async () => {
     const value = Number(capital);
     if (!settings || !value || value === settings.capital) return;
@@ -81,15 +133,20 @@ export default function App() {
     setError(null);
     try {
       await startScan();
-      setScan((s) => ({ ...s, status: "running", progress: "Starting scan…" }));
+      setScan((s) => ({ ...s, status: "running", progress: "Starting scan…", started_at: Date.now() / 1000 }));
       beginPolling();
     } catch (e) {
       setError(e.message);
     }
   };
 
-  const running = scan.status === "running";
   const results = scan.results ?? [];
+  const elapsed = running && scan.started_at ? now - scan.started_at : 0;
+  const loadDuration =
+    scan.status === "done" && scan.started_at && scan.finished_at
+      ? scan.finished_at - scan.started_at
+      : null;
+  const lastUpdated = scan.refreshed_at ?? scan.finished_at;
 
   return (
     <div className="app">
@@ -150,11 +207,24 @@ export default function App() {
       {running && (
         <div className="banner progress">
           <span className="spinner" />
-          {scan.progress || "Scanning…"}
+          <span>{scan.progress || "Scanning…"}</span>
+          <span className="elapsed">{formatDuration(elapsed)} elapsed</span>
         </div>
       )}
 
       {scan.status === "error" && <div className="banner error">Scan failed: {scan.error}</div>}
+
+      {!running && scan.status === "done" && results.length > 0 && (
+        <div className="scan-meta muted small">
+          {loadDuration != null && <span>Loaded {results.length} setups in {formatDuration(loadDuration)}</span>}
+          {lastUpdated && <span> · updated {formatClock(lastUpdated)}</span>}
+          {scan.refreshing ? (
+            <span className="refreshing"> · <span className="spinner tiny" /> refreshing…</span>
+          ) : (
+            <span> · auto-refreshes every 3 min</span>
+          )}
+        </div>
+      )}
 
       <main>
         {!running && scan.status === "done" && results.length === 0 && (
