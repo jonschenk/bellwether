@@ -268,12 +268,18 @@ body {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  transition: border-color 0.15s, transform 0.15s;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
 }
 
 .card:hover {
   border-color: #324059;
   transform: translateY(-1px);
+}
+
+.card-copied {
+  border-color: var(--green);
+  box-shadow: 0 0 0 1px var(--green);
 }
 
 .card-head {
@@ -349,6 +355,13 @@ body {
 .summary-pending {
   color: var(--text-muted);
   font-style: italic;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.confidence-pending {
+  background: rgba(91, 140, 255, 0.08);
+  color: var(--text-muted);
+  border: 1px dashed rgba(91, 140, 255, 0.35);
   animation: pulse 1.6s ease-in-out infinite;
 }
 

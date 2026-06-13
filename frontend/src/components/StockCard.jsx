@@ -43,13 +43,20 @@ export default function StockCard({ stock }) {
   };
 
   return (
-    <article className="card">
+    <article
+      className={`card ${copied ? "card-copied" : ""}`}
+      onClick={copyTicker}
+      title="Click anywhere to copy the ticker"
+    >
       <div className="card-head">
         <div className="ticker-row">
           <h2 className="ticker">{stock.ticker}</h2>
           <button
             className={`btn copy ${copied ? "copied" : ""}`}
-            onClick={copyTicker}
+            onClick={(e) => {
+              e.stopPropagation();
+              copyTicker();
+            }}
             title="Copy ticker for ThinkorSwim"
           >
             {copied ? "Copied ✓" : "Copy"}
@@ -148,7 +155,7 @@ export default function StockCard({ stock }) {
 
       <div className="card-foot">
         {analyzing ? (
-          <span className="muted small">AI analysis pending…</span>
+          <span className="badge confidence-pending">confidence pending</span>
         ) : (
           <span className={`badge confidence-${(ai.confidence ?? "low").toLowerCase()}`}>
             {ai.confidence ?? "—"} confidence
