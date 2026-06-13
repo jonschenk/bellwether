@@ -27,3 +27,16 @@ export const analyzeTicker = (ticker) =>
   request("/api/analyze", { method: "POST", body: JSON.stringify({ ticker }) });
 export const getScanStatus = () => request("/api/scan/status");
 export const getHealth = () => request("/api/health");
+
+// --- Schwab / portfolio ---
+export const getSchwabStatus = () => request("/api/schwab/status");
+export const getSchwabAuthUrl = () => request("/api/schwab/auth-url");
+export const postSchwabCallback = (callbackUrl) =>
+  request("/api/schwab/callback", { method: "POST", body: JSON.stringify({ callback_url: callbackUrl }) });
+export const postSchwabDisconnect = () => request("/api/schwab/disconnect", { method: "POST" });
+export const getPortfolio = () => request("/api/portfolio");
+export const fetchInsight = (position) =>
+  request("/api/portfolio/insight", { method: "POST", body: JSON.stringify(position) });
+export const getAlerts = () => request("/api/alerts");
+export const setAlert = (symbol, stop, target) =>
+  request("/api/alerts", { method: "PUT", body: JSON.stringify({ symbol, stop, target }) });

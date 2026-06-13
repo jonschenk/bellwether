@@ -6,6 +6,11 @@ backend/.venv/
 __pycache__/
 *.pyc
 backend/settings.json
+backend/alerts.json
+
+# schwab tokens & encryption key (NEVER commit)
+backend/app/.schwab_key
+backend/app/.schwab_token.enc
 
 # node
 node_modules/

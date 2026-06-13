@@ -21,6 +21,8 @@ import os
 import httpx
 import yfinance as yf
 
+from .indicators import rsi, sma
+
 log = logging.getLogger(__name__)
 
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
@@ -319,6 +321,114 @@ async def analyze_all(stocks: list[dict], progress=lambda msg: None, limit: int 
         await _run_anthropic(targets, news_map, progress)
     else:
         await _run_ollama(targets, news_map, progress)
+
+
+POSITION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "insight": {
+            "type": "string",
+            "description": "ONE sentence on whether the technical setup still looks valid for an open swing position, or what has changed since entry.",
+        },
+        "status": {"type": "string", "enum": ["Valid", "Caution", "Broken"]},
+    },
+    "required": ["insight", "status"],
+    "additionalProperties": False,
+}
+
+
+def _tech_snapshot(symbol: str) -> dict | None:
+    """Quick current-technicals read for an open position."""
+    try:
+        df = yf.Ticker(symbol).history(period="1y", interval="1d", auto_adjust=True)
+    except Exception:
+        log.exception("Snapshot download failed for %s", symbol)
+        return None
+    if df is None or df.empty or len(df) < 60:
+        return None
+    close = df["Close"]
+    price = float(close.iloc[-1])
+    high_52w = float(df["High"].tail(252).max())
+    return {
+        "price": round(price, 2),
+        "sma20": round(float(sma(close, 20).iloc[-1]), 2),
+        "sma50": round(float(sma(close, 50).iloc[-1]), 2),
+        "sma200": round(float(sma(close, 200).iloc[-1]), 2) if len(close) >= 200 else None,
+        "rsi": round(float(rsi(close, 14).iloc[-1]), 1),
+        "pct_from_high": round((high_52w - price) / high_52w * 100, 1) if high_52w else None,
+    }
+
+
+async def _provider_json(prompt: str, schema: dict) -> dict | None:
+    """Single structured-output call against the configured provider. None on failure."""
+    provider = _provider()
+    if provider == "none":
+        return None
+    try:
+        if provider == "anthropic":
+            if not _anthropic_key():
+                return None
+            import anthropic
+
+            resp = await anthropic.AsyncAnthropic().messages.create(
+                model=ANTHROPIC_MODEL,
+                max_tokens=512,
+                output_config={"format": {"type": "json_schema", "schema": schema}},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return json.loads(next(b.text for b in resp.content if b.type == "text"))
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=5)) as client:
+            if await _ollama_preflight(client):
+                return None
+            r = await client.post(
+                f"{_ollama_url()}/api/chat",
+                json={
+                    "model": _ollama_model(),
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "format": schema,
+                    "options": {"temperature": 0.3},
+                },
+            )
+            r.raise_for_status()
+            return json.loads(r.json()["message"]["content"])
+    except Exception:
+        log.exception("Provider JSON call failed")
+        return None
+
+
+async def position_insight(position: dict) -> dict:
+    """One-sentence read on whether an open position's setup still holds."""
+    symbol = position.get("symbol", "?")
+    snap = await asyncio.to_thread(_tech_snapshot, symbol)
+    news = await asyncio.to_thread(_fetch_news, symbol)
+    news_block = "\n".join(f"- {n['title']}" for n in news[:5]) or "(no recent news)"
+    tech = (
+        f"Now ${snap['price']} | RSI {snap['rsi']} | 20SMA ${snap['sma20']} | 50SMA ${snap['sma50']} "
+        f"| 200SMA ${snap['sma200']} | {snap['pct_from_high']}% below 52w high"
+        if snap
+        else "(technical snapshot unavailable)"
+    )
+    prompt = f"""You are reviewing an OPEN swing-trade position (2-5 day hold). Decide in ONE sentence whether the technical setup still looks valid, or flag what has changed since entry.
+
+{symbol}: entry ${position.get('entry')}, now ${position.get('current')}, P&L {position.get('pl_pct')}%, held {position.get('days_held', '?')} days.
+Current technicals: {tech}
+Recent news:
+{news_block}
+
+Respond with two fields:
+- "insight": a complete sentence (10-30 words) explaining what's happening and your reasoning — NOT a single word.
+- "status": exactly one of "Valid" (setup intact, hold), "Caution" (something weakening — watch closely), or "Broken" (thesis no longer holds — consider exiting).
+
+Example insight: "Still above its rising 50-day average with healthy volume, so the uptrend remains intact despite the recent pause." """
+
+    result = await _provider_json(prompt, POSITION_SCHEMA)
+    if not result:
+        return {"insight": "AI insight unavailable.", "status": "Caution", "error": True}
+    if result.get("status") not in ("Valid", "Caution", "Broken"):
+        result["status"] = "Caution"
+    result.setdefault("insight", "")
+    return result
 
 
 async def analyze_single(stock: dict) -> None:

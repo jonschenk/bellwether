@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
@@ -128,6 +128,40 @@ async function waitForBackend(attempts = 60) {
   return false;
 }
 
+// Schwab OAuth: open the login page in a child window and resolve with the
+// redirect URL (which carries the auth code) once Schwab redirects to the
+// registered callback (https://127.0.0.1...). That page never loads (nothing is
+// serving it) — we intercept the navigation and grab the URL before it fails.
+ipcMain.handle("schwab-oauth", (_event, { authUrl, redirectUri }) => {
+  return new Promise((resolve) => {
+    const authWin = new BrowserWindow({
+      width: 520,
+      height: 760,
+      title: "Connect Schwab",
+      backgroundColor: "#0b0e14",
+      autoHideMenuBar: true,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, partition: "schwab-oauth" },
+    });
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+      if (!authWin.isDestroyed()) authWin.destroy();
+    };
+    const inspect = (url) => {
+      if (url && url.startsWith(redirectUri)) finish(url);
+    };
+    authWin.webContents.on("will-redirect", (_e, url) => inspect(url));
+    authWin.webContents.on("will-navigate", (_e, url) => inspect(url));
+    authWin.webContents.on("did-start-navigation", (_e, url, isInPlace, isMainFrame) => {
+      if (isMainFrame) inspect(url);
+    });
+    authWin.on("closed", () => finish(null)); // user closed without finishing
+    authWin.loadURL(authUrl);
+  });
+});
+
 async function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -140,6 +174,7 @@ async function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, "preload.js"),
     },
   });
 

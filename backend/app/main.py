@@ -14,9 +14,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .ai import analyze_all, analyze_single
+from .ai import analyze_all, analyze_single, position_insight
 from .config import ScanSettings, load_settings, save_settings
+from . import alerts as alerts_store
 from . import price_cache
+from . import schwab
 from .scanner import refresh_results, scan_market
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -166,3 +168,96 @@ async def analyze_one(req: AnalyzeRequest) -> dict:
 @app.get("/api/scan/status")
 async def scan_status() -> dict:
     return scan_state
+
+
+# ---------------------------------------------------------------- Schwab / portfolio
+
+
+class SchwabCallback(BaseModel):
+    callback_url: str  # full redirect URL (or bare code) from the OAuth flow
+
+
+class InsightRequest(BaseModel):
+    symbol: str
+    entry: float | None = None
+    current: float | None = None
+    pl_pct: float | None = None
+    days_held: int | None = None
+
+
+class AlertRequest(BaseModel):
+    symbol: str
+    stop: float | None = None
+    target: float | None = None
+
+
+@app.get("/api/schwab/status")
+async def schwab_status() -> dict:
+    return {
+        "configured": schwab.is_configured(),  # app key/secret present
+        "connected": schwab.is_connected(),  # tokens stored
+        "redirect_uri": schwab.redirect_uri(),
+    }
+
+
+@app.get("/api/schwab/auth-url")
+async def schwab_auth_url() -> dict:
+    if not schwab.is_configured():
+        raise HTTPException(status_code=400, detail="Set SCHWAB_APP_KEY and SCHWAB_APP_SECRET in .env first.")
+    return {"auth_url": schwab.authorize_url(), "redirect_uri": schwab.redirect_uri()}
+
+
+@app.post("/api/schwab/callback")
+async def schwab_callback(body: SchwabCallback) -> dict:
+    try:
+        await asyncio.to_thread(schwab.exchange_code, body.callback_url)
+    except Exception as e:
+        logging.exception("Schwab code exchange failed")
+        raise HTTPException(status_code=400, detail=f"Token exchange failed: {e}")
+    return {"connected": True}
+
+
+@app.post("/api/schwab/disconnect")
+async def schwab_disconnect() -> dict:
+    schwab.disconnect()
+    return {"connected": False}
+
+
+@app.get("/api/portfolio")
+async def portfolio() -> dict:
+    if not schwab.is_connected():
+        return {"connected": False}
+    try:
+        data = await asyncio.to_thread(schwab.get_portfolio)
+        return {"connected": True, **data}
+    except schwab.SchwabError as e:
+        if str(e) in ("not_connected", "unauthorized"):
+            return {"connected": False, "error": "Schwab session expired — reconnect."}
+        raise HTTPException(status_code=502, detail=f"Schwab error: {e}")
+    except Exception as e:
+        logging.exception("Portfolio fetch failed")
+        raise HTTPException(status_code=502, detail=f"Schwab error: {e}")
+
+
+@app.get("/api/portfolio/balance")
+async def portfolio_balance() -> dict:
+    """Just the live account value, for the scanner's capital field."""
+    if not schwab.is_connected():
+        return {"connected": False}
+    value = await asyncio.to_thread(schwab.account_value)
+    return {"connected": True, "value": value, "as_of": time.time()}
+
+
+@app.post("/api/portfolio/insight")
+async def portfolio_insight(req: InsightRequest) -> dict:
+    return await position_insight(req.model_dump())
+
+
+@app.get("/api/alerts")
+async def get_alerts() -> dict:
+    return alerts_store.load()
+
+
+@app.put("/api/alerts")
+async def put_alert(req: AlertRequest) -> dict:
+    return alerts_store.set_alert(req.symbol, req.stop, req.target)
