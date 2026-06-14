@@ -24,13 +24,21 @@ from . import price_cache
 from .config import ScanSettings
 from .indicators import adx, atr, rsi, sma
 from .risk import position_plan
-from .universe import company_names, load_universe
+from .universe import bulk_quote, company_names, load_universe
 
 log = logging.getLogger(__name__)
 
 BATCH_SIZE = 100
 HISTORY_PERIOD = "1y"  # ~252 bars: enough for 200-SMA, its slope, and 6-month momentum
 MIN_BARS = 220  # enough for 200-SMA + a month of slope
+
+# Generous pre-screen net (price + volume) applied before downloading history, so
+# we only pull a year of bars for plausibly-tradeable names. The floors sit well
+# below the user's real min-price/volume defaults ($15 / 500k) so loosening those
+# filters still re-evaluates from cache without a re-download. No upper price cap,
+# so raising capital never misses a now-affordable stock.
+PREGATE_MIN_PRICE = 5.0
+PREGATE_MIN_VOLUME = 100_000
 
 
 def _extract(data: pd.DataFrame, ticker: str) -> Optional[pd.DataFrame]:
@@ -210,11 +218,29 @@ def scan_market(
     return results
 
 
+def _quote_passes(pv: tuple | None) -> bool:
+    if not pv:
+        return False
+    price, vol = pv
+    return bool(price and vol and price > PREGATE_MIN_PRICE and vol > PREGATE_MIN_VOLUME)
+
+
 def _download_universe(universe: str, progress) -> dict[str, pd.DataFrame]:
-    """Download bars for the whole universe, returning every VALID ticker's frame
-    (not pre-filtered — the cache must hold all of them so changing a filter can
-    never miss a stock)."""
+    """Download bars for the universe. For the full market we first bulk-quote
+    every symbol (one cheap pass) and only download a year of history for names
+    that clear a generous price/volume net, which roughly halves the download.
+    The net is fixed and wide, so the cache still holds a superset and the user's
+    real filters re-evaluate from it without a re-download."""
     tickers = load_universe(universe)
+
+    if universe == "full":
+        progress("Pre-screening the market by price and volume…")
+        quotes = bulk_quote(tickers)
+        if len(quotes) > 1000:  # endpoint worked; else fall back to downloading all
+            kept = [t for t in tickers if _quote_passes(quotes.get(t))]
+            progress(f"Pre-screened {len(tickers):,} -> {len(kept):,} tradeable tickers")
+            tickers = kept
+
     total = len(tickers)
     scope = "full US market" if universe == "full" else "curated list"
     frames: dict[str, pd.DataFrame] = {}

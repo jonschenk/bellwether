@@ -151,6 +151,36 @@ def company_names() -> dict[str, str]:
     return {}
 
 
+QUOTE_URL = "https://query2.finance.yahoo.com/v7/finance/quote"
+
+
+def bulk_quote(symbols: list[str], batch: int = 200) -> dict[str, tuple]:
+    """Fetch (price, 3-month avg volume) for many symbols at once via Yahoo's
+    quote endpoint. ~200 symbols per request, so the whole market is ~30 requests
+    in a few seconds. Returns {} if the endpoint is unavailable (caller falls back
+    to downloading full history for everything)."""
+    try:
+        from yfinance.data import YfData  # handles Yahoo's crumb/cookie auth
+
+        yfd = YfData()
+    except Exception:
+        log.exception("yfinance session unavailable for bulk quote")
+        return {}
+
+    out: dict[str, tuple] = {}
+    for i in range(0, len(symbols), batch):
+        chunk = symbols[i : i + batch]
+        try:
+            resp = yfd.get(QUOTE_URL, params={"symbols": ",".join(chunk)})
+            for q in resp.json().get("quoteResponse", {}).get("result", []):
+                sym = q.get("symbol")
+                if sym:
+                    out[sym] = (q.get("regularMarketPrice"), q.get("averageDailyVolume3Month"))
+        except Exception:
+            log.exception("Bulk quote batch failed at offset %d", i)
+    return out
+
+
 def _read_list(path: Path) -> list[str]:
     out = []
     for line in path.read_text().splitlines():

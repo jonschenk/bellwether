@@ -16,7 +16,7 @@ It's made for finding and researching trades, not placing them. Each card has a 
 - Ranks stocks by relative strength across the whole universe, so the strongest names float to the top.
 - Sizes every trade to your capital using a fixed-risk rule and an ATR-based stop.
 - Free local AI analysis through [Ollama](https://ollama.com). You can swap in a hosted model like Claude if you want sharper writing.
-- Smart caching, so re-running a scan or tweaking a filter takes about a second instead of three minutes.
+- A bulk price/volume pre-screen and a smart price cache keep things quick: a full cold scan runs in about a minute, and re-running or tweaking a filter is near-instant off the cache.
 - Adjustable filters for price, volume, RSI, trend strength, and more.
 - Runs on macOS and Windows.
 
