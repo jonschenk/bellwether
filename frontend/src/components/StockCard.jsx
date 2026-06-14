@@ -52,7 +52,10 @@ export default function StockCard({ stock, onAnalyze }) {
     >
       <div className="card-head">
         <div className="ticker-row">
-          <h2 className="ticker">{stock.ticker}</h2>
+          <div className="ticker-block">
+            <h2 className="ticker">{stock.ticker}</h2>
+            {stock.name && <span className="company-name" title={stock.name}>{stock.name}</span>}
+          </div>
           <button
             className={`btn copy ${copied ? "copied" : ""}`}
             onClick={(e) => {

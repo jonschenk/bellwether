@@ -24,7 +24,7 @@ from . import price_cache
 from .config import ScanSettings
 from .indicators import adx, atr, rsi, sma
 from .risk import position_plan
-from .universe import load_universe
+from .universe import company_names, load_universe
 
 log = logging.getLogger(__name__)
 
@@ -202,7 +202,12 @@ def scan_market(
 
     if not frames_all:
         return []
-    return _evaluate(frames_all, settings, progress)
+    results = _evaluate(frames_all, settings, progress)
+    if results:
+        names = company_names()
+        for r in results:
+            r["name"] = names.get(r["ticker"], "")
+    return results
 
 
 def _download_universe(universe: str, progress) -> dict[str, pd.DataFrame]:
@@ -329,6 +334,7 @@ def refresh_results(settings: ScanSettings, prior_results: list[dict]) -> list[d
                 updated.append(prior)  # keep the prior row if the refresh failed
             else:
                 row["ai"] = prior.get("ai")  # preserve the AI analysis from the scan
+                row["name"] = prior.get("name", "")  # preserve the company name
                 if prior.get("ai_status"):  # preserve on-demand "idle" flag
                     row["ai_status"] = prior["ai_status"]
                 updated.append(row)

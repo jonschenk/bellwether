@@ -11,6 +11,7 @@ the fallback when the live fetch fails.
 """
 
 import datetime as dt
+import json
 import logging
 import re
 from pathlib import Path
@@ -22,6 +23,7 @@ log = logging.getLogger(__name__)
 APP_DIR = Path(__file__).parent
 CURATED_PATH = APP_DIR / "tickers.txt"
 CACHE_PATH = APP_DIR / "universe_cache.txt"
+NAMES_CACHE_PATH = APP_DIR / "names_cache.json"
 CACHE_MAX_AGE_DAYS = 7
 
 NASDAQ_LISTED = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
@@ -75,6 +77,78 @@ def fetch_full_universe(timeout: float = 20) -> list[str]:
         # ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot|Test Issue|NASDAQ Symbol
         symbols.update(_parse(r.text, sym_idx=0, name_idx=1, etf_idx=4, test_idx=6))
     return sorted(symbols)
+
+
+# Trim the boilerplate the directory appends to security names, e.g.
+# "Apple Inc. - Common Stock" / "Alcoa Corporation Common Stock" -> the company.
+_NAME_CUT = re.compile(
+    r"\s+(-\s|common stock|common shares|ordinary shares|class\s+[a-z]\b|"
+    r"american depositary|depositary shar|warrant|right|unit\b|preferred).*$",
+    re.I,
+)
+
+
+def _clean_name(name: str) -> str:
+    return _NAME_CUT.sub("", name.strip()).strip().rstrip(",").strip()
+
+
+def _parse_names(text: str, sym_idx: int, name_idx: int, etf_idx: int, test_idx: int) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line or line.startswith(("Symbol|", "ACT Symbol|", "File Creation Time")):
+            continue
+        f = line.split("|")
+        if len(f) <= max(sym_idx, name_idx, etf_idx, test_idx):
+            continue
+        if f[etf_idx].strip() != "N" or f[test_idx].strip() != "N":
+            continue
+        sym = _clean_symbol(f[sym_idx])
+        if sym:
+            cleaned = _clean_name(f[name_idx])
+            if cleaned:
+                out[sym] = cleaned
+    return out
+
+
+def _fetch_names(timeout: float = 20) -> dict[str, str]:
+    names: dict[str, str] = {}
+    with httpx.Client(timeout=timeout, headers={"User-Agent": "swing-scanner/1.0"}) as client:
+        r = client.get(NASDAQ_LISTED)
+        r.raise_for_status()
+        names.update(_parse_names(r.text, sym_idx=0, name_idx=1, etf_idx=6, test_idx=3))
+        r = client.get(OTHER_LISTED)
+        r.raise_for_status()
+        names.update(_parse_names(r.text, sym_idx=0, name_idx=1, etf_idx=4, test_idx=6))
+    return names
+
+
+def _names_cache_fresh() -> bool:
+    if not NAMES_CACHE_PATH.exists():
+        return False
+    age = dt.date.today() - dt.date.fromtimestamp(NAMES_CACHE_PATH.stat().st_mtime)
+    return age.days < CACHE_MAX_AGE_DAYS
+
+
+def company_names() -> dict[str, str]:
+    """Map of ticker -> clean company name, cached 7 days. {} if unavailable offline."""
+    if _names_cache_fresh():
+        try:
+            return json.loads(NAMES_CACHE_PATH.read_text())
+        except Exception:
+            log.exception("Reading names cache failed; refetching")
+    try:
+        names = _fetch_names()
+        if len(names) > 1000:
+            NAMES_CACHE_PATH.write_text(json.dumps(names))
+            return names
+    except Exception:
+        log.exception("Company-name fetch failed; falling back")
+    if NAMES_CACHE_PATH.exists():
+        try:
+            return json.loads(NAMES_CACHE_PATH.read_text())
+        except Exception:
+            pass
+    return {}
 
 
 def _read_list(path: Path) -> list[str]:

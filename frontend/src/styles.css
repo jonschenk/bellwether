@@ -298,10 +298,26 @@ body {
   gap: 10px;
 }
 
+.ticker-block {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
 .ticker {
   font-size: 20px;
   font-weight: 700;
   letter-spacing: 0.3px;
+}
+
+.company-name {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 190px;
 }
 
 /* ---------- badges ---------- */
