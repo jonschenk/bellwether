@@ -95,4 +95,6 @@ FastAPI backend
 
 yfinance is unofficial and will rate-limit you now and then. If a scan errors partway through, just run it again (the cache makes the retry quick). Local AI runs about 5 to 15 seconds per stock on a recent machine, and only the top setups are analyzed automatically so the dashboard stays responsive.
 
+Most settings re-screen instantly off the cache. The one exception: lowering the minimum price or minimum volume can surface stocks that weren't downloaded, so use the Fresh button to re-pull when you loosen those two.
+
 This is a tool for research and learning, not financial advice. It finds and analyzes setups. It does not place trades, and you should do your own homework before putting real money at risk.

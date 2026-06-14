@@ -175,7 +175,10 @@ def bulk_quote(symbols: list[str], batch: int = 200) -> dict[str, tuple]:
             for q in resp.json().get("quoteResponse", {}).get("result", []):
                 sym = q.get("symbol")
                 if sym:
-                    out[sym] = (q.get("regularMarketPrice"), q.get("averageDailyVolume3Month"))
+                    # Use the higher of the 3-month and 10-day average volume so a
+                    # recent volume surge doesn't get pre-screened out.
+                    vol = max(q.get("averageDailyVolume3Month") or 0, q.get("averageDailyVolume10Day") or 0)
+                    out[sym] = (q.get("regularMarketPrice"), vol or None)
         except Exception:
             log.exception("Bulk quote batch failed at offset %d", i)
     return out

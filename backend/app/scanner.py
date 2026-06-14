@@ -32,13 +32,15 @@ BATCH_SIZE = 100
 HISTORY_PERIOD = "1y"  # ~252 bars: enough for 200-SMA, its slope, and 6-month momentum
 MIN_BARS = 220  # enough for 200-SMA + a month of slope
 
-# Generous pre-screen net (price + volume) applied before downloading history, so
-# we only pull a year of bars for plausibly-tradeable names. The floors sit well
-# below the user's real min-price/volume defaults ($15 / 500k) so loosening those
-# filters still re-evaluates from cache without a re-download. No upper price cap,
-# so raising capital never misses a now-affordable stock.
-PREGATE_MIN_PRICE = 5.0
-PREGATE_MIN_VOLUME = 100_000
+# Pre-screen net (price + volume) applied before downloading history, so we only
+# pull a year of bars for plausibly-tradeable names. Set just under the real
+# min-price/volume defaults ($15 / 500k) with a small safety margin. NOTE: this
+# is the one filter change that needs a fresh scan — lowering min_price below $14
+# or min_avg_volume below 400k can't surface new names from cache (we never
+# downloaded them); use the Fresh button. Everything else (RSI/ADX/RS/ATR, and
+# raising capital, since there's no upper price cap) re-evaluates from cache.
+PREGATE_MIN_PRICE = 14.0
+PREGATE_MIN_VOLUME = 400_000
 
 
 def _extract(data: pd.DataFrame, ticker: str) -> Optional[pd.DataFrame]:
