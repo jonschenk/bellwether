@@ -43,6 +43,7 @@ scan_state: dict = {
     "refreshed_at": None,  # epoch seconds of the last lightweight refresh
     "refreshing": False,
     "from_cache": False,  # whether the last scan reused cached prices
+    "ai_top_n": None,  # how many setups are auto-analyzed (the rest are on-demand)
     "error": None,
 }
 
@@ -67,6 +68,7 @@ async def _run_scan(force_fresh: bool = False) -> None:
         scan_state["scanned_at"] = time.time()
         if candidates:
             scan_state["status"] = "analyzing"
+            scan_state["ai_top_n"] = settings.ai_top_n
             _set_progress(f"{len(candidates)} setups found — running AI analysis…")
             await analyze_all(candidates, _set_progress, limit=settings.ai_top_n)
         scan_state["status"] = "done"

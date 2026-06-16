@@ -165,6 +165,9 @@ export default function App() {
   const results = scan.results ?? [];
   const elapsed = busy && scan.started_at ? now - scan.started_at : 0;
   const analyzedCount = results.filter((r) => r.ai).length;
+  // Only the top-N setups are auto-analyzed; the rest are on-demand. Cap the
+  // denominator to that count so it matches the backend's "analyzed X/N" message.
+  const autoAnalyzeCount = Math.min(scan.ai_top_n ?? results.length, results.length);
   const scanDuration =
     scan.started_at && scan.scanned_at ? scan.scanned_at - scan.started_at : null;
   const loadDuration =
@@ -250,7 +253,7 @@ export default function App() {
       {analyzing && results.length > 0 && (
         <div className="scan-meta muted small">
           {scanDuration != null && <span>Found {results.length} setups in {formatDuration(scanDuration)}</span>}
-          <span> · <span className="spinner tiny" /> AI analyzing {analyzedCount}/{results.length}…</span>
+          <span> · <span className="spinner tiny" /> AI analyzing {analyzedCount}/{autoAnalyzeCount}…</span>
         </div>
       )}
 

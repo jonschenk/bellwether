@@ -25,6 +25,12 @@ function formatVolume(v) {
   return String(v);
 }
 
+// Always show cents, including trailing zeros (63.3 -> 63.30), with separators.
+function money(v) {
+  if (typeof v !== "number") return v;
+  return v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 export default function StockCard({ stock, onAnalyze }) {
   const [copied, setCopied] = useState(false);
   const ai = stock.ai ?? {};
@@ -86,7 +92,7 @@ export default function StockCard({ stock, onAnalyze }) {
       <div className="stats">
         <div className="stat">
           <span className="stat-label">Price</span>
-          <span className="stat-value">${stock.price.toFixed(2)}</span>
+          <span className="stat-value">${money(stock.price)}</span>
         </div>
         <div className="stat">
           <span
@@ -131,22 +137,22 @@ export default function StockCard({ stock, onAnalyze }) {
         </div>
         <div className="plan-row">
           <strong>{plan.shares}</strong> share{plan.shares === 1 ? "" : "s"} ≈{" "}
-          <strong>${plan.position_cost?.toLocaleString()}</strong>{" "}
+          <strong>${money(plan.position_cost)}</strong>{" "}
           <span className="muted">({plan.position_pct}% of capital)</span>
         </div>
         <div className="plan-levels">
           <span className="lvl">
-            <span className="lvl-label">Entry</span>${plan.entry}
+            <span className="lvl-label">Entry</span>${money(plan.entry)}
           </span>
           <span className="lvl lvl-stop">
-            <span className="lvl-label">Stop</span>${plan.stop}
+            <span className="lvl-label">Stop</span>${money(plan.stop)}
           </span>
           <span className="lvl lvl-target">
-            <span className="lvl-label">Target</span>${plan.target}
+            <span className="lvl-label">Target</span>${money(plan.target)}
           </span>
         </div>
         <div className="plan-risk muted small">
-          Risking ${plan.risk_dollars} ({plan.risk_pct}% of capital) if stopped out
+          Risking ${money(plan.risk_dollars)} ({plan.risk_pct}% of capital) if stopped out
         </div>
       </div>
 
