@@ -37,7 +37,7 @@ Every result comes pre-sized to your account, the way a careful trader would do 
 - You set your capital, and the app won't show you stocks priced too high to buy a sensible position.
 - The stop sits below the recent noise, based on the stock's average true range.
 - Share count is whatever keeps your loss within a set percentage of capital (2% by default) if the stop gets hit.
-- The target defaults to three times the risk.
+- The target defaults to twice the risk, capped at the stock's 52-week high, since that prior high is the natural overhead for a short swing. Each card shows the actual reward-to-risk ratio after the cap.
 
 If a stock is too volatile to size safely for your account, it gets flagged instead of quietly dropped.
 

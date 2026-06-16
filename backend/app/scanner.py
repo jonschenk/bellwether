@@ -100,7 +100,7 @@ def _build_row(ticker: str, m: dict, settings: ScanSettings, rs_rating: float) -
     """Assemble a sized result row from metrics. No pass/fail — used by both the
     scan (after filtering) and the live refresh (without filtering)."""
     price, atr14 = m["price"], m["atr"]
-    plan = position_plan(price, atr14, settings)
+    plan = position_plan(price, atr14, settings, m["high_52w"])
     if plan is None:  # can't afford even one share within the rules
         return None
 
