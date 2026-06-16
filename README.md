@@ -18,6 +18,7 @@ It's made for finding and researching trades, not placing them. Each card has a 
 - Free local AI analysis through [Ollama](https://ollama.com). You can swap in a hosted model like Claude if you want sharper writing.
 - A bulk price/volume pre-screen and a smart price cache keep things quick: a full cold scan runs in about a minute, and re-running or tweaking a filter is near-instant off the cache.
 - Adjustable filters for price, volume, RSI, trend strength, and more.
+- Send the results to ThinkorSwim as a watchlist, by clipboard or a .csv file.
 - Runs on macOS and Windows.
 
 ![A single setup card](docs/screenshots/stock-card.png)
@@ -46,6 +47,15 @@ If a stock is too volatile to size safely for your account, it gets flagged inst
 ## AI analysis
 
 Each setup's recent news gets boiled down by an AI model into a couple of sentences, a Bullish, Neutral, or Bearish call, the main risks or catalysts, and a confidence rating. By default this runs on a free local model through Ollama, so nothing leaves your computer. If you'd prefer a hosted model for better writing, set `AI_PROVIDER` in your `.env`.
+
+## Sending results to ThinkorSwim
+
+Once a scan finishes you can push the whole list into a ThinkorSwim watchlist instead of copying tickers one at a time. Two ways:
+
+- Click "Copy tickers for ThinkorSwim", then in ThinkorSwim open a watchlist, choose Import, and set "Load from" to "Paste symbols from clipboard". This is the most reliable route.
+- Or click "Export .csv" and import that file from the same watchlist Import menu.
+
+Class shares are converted to the dot format ThinkorSwim expects (so BRK-B becomes BRK.B). The per-card copy button is still there for one-off tickers.
 
 ## Setup
 

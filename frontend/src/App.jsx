@@ -25,6 +25,11 @@ function formatClock(epochSeconds) {
   return new Date(epochSeconds * 1000).toLocaleTimeString();
 }
 
+// ThinkorSwim uses a dot for class shares (BRK.B); we store Yahoo's dash (BRK-B).
+function tosSymbols(results) {
+  return results.map((r) => r.ticker.replace(/-/g, "."));
+}
+
 export default function App() {
   const [backendUp, setBackendUp] = useState(null);
   const [scan, setScan] = useState({ status: "idle", progress: "", results: [] });
@@ -33,6 +38,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState(null);
   const [now, setNow] = useState(Date.now() / 1000); // ticks each second while running
+  const [exportNote, setExportNote] = useState(""); // transient "copied"/"saved" confirmation
   const pollRef = useRef(null);
   const refreshingRef = useRef(false);
 
@@ -163,6 +169,41 @@ export default function App() {
   };
 
   const results = scan.results ?? [];
+
+  const flashExportNote = (msg) => {
+    setExportNote(msg);
+    setTimeout(() => setExportNote(""), 2000);
+  };
+
+  // Copy all displayed tickers to the clipboard for ThinkorSwim's watchlist
+  // "Paste symbols from clipboard" import (the most reliable path). One per line
+  // also makes the list handy to paste anywhere else.
+  const copyForToS = async () => {
+    const syms = tosSymbols(results);
+    if (!syms.length) return;
+    try {
+      await navigator.clipboard.writeText(syms.join("\n"));
+      flashExportNote(`Copied ${syms.length} tickers`);
+    } catch {
+      flashExportNote("Clipboard unavailable");
+    }
+  };
+
+  // Download the tickers as a .csv for ThinkorSwim's file import (Watchlist menu
+  // -> Import). One symbol per line, no header — ToS detects the symbols.
+  const downloadWatchlist = () => {
+    const syms = tosSymbols(results);
+    if (!syms.length) return;
+    const blob = new Blob([syms.join("\n") + "\n"], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "swing-scanner-watchlist.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+    flashExportNote(`Saved ${syms.length} tickers`);
+  };
+
   const elapsed = busy && scan.started_at ? now - scan.started_at : 0;
   const analyzedCount = results.filter((r) => r.ai).length;
   // Only the top-N setups are auto-analyzed; the rest are on-demand. Cap the
@@ -267,6 +308,18 @@ export default function App() {
           ) : (
             <span> · auto-refreshes every 3 min</span>
           )}
+        </div>
+      )}
+
+      {scan.status === "done" && results.length > 0 && (
+        <div className="export-bar">
+          <button className="btn export" onClick={copyForToS} title="Copy all tickers for ThinkorSwim's 'Paste symbols from clipboard' import">
+            Copy tickers for ThinkorSwim
+          </button>
+          <button className="btn export ghost" onClick={downloadWatchlist} title="Download a .csv for ThinkorSwim's Watchlist → Import">
+            Export .csv
+          </button>
+          {exportNote && <span className="export-note muted small">{exportNote} ✓</span>}
         </div>
       )}
 
