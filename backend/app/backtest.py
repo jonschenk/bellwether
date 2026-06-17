@@ -324,6 +324,26 @@ def compare(ds: dict, candidates=CANDIDATES, capital: float = DEFAULT_CAPITAL) -
     return rows
 
 
+def _split_stats(trades: list[Trade], split: str) -> tuple[dict, dict]:
+    """Bucket trades by entry date into train (< split) and test (>= split). Strategy params
+    are fixed and the run is continuous, so this is a clean out-of-sample split with no leakage."""
+    train = [t for t in trades if t.signal_date < split]
+    test = [t for t in trades if t.signal_date >= split]
+    return _stats(train), _stats(test)
+
+
+def compare_oos(ds: dict, split: str, candidates=CANDIDATES, capital: float = DEFAULT_CAPITAL) -> list:
+    """Out-of-sample comparison: each variation's train vs test expectancy. Sorted by TEST
+    expectancy — that's the number that matters (does the edge hold on unseen data?)."""
+    rows = []
+    for name, ov, mh in candidates:
+        trades = run_on_dataset(ds, ScanSettings(capital=capital, **ov), mh)["trades"]
+        tr, te = _split_stats(trades, split)
+        rows.append((name, tr, te))
+    rows.sort(key=lambda r: r[2].get("expectancy_r", -99), reverse=True)
+    return rows
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     p = argparse.ArgumentParser(description="Backtest the leader-pullback strategy.")
@@ -335,12 +355,26 @@ def main() -> None:
     p.add_argument("--max-hold", type=int, default=DEFAULT_MAX_HOLD)
     p.add_argument("--capital", type=float, default=DEFAULT_CAPITAL)
     p.add_argument("--compare", action="store_true", help="sweep the built-in candidate variations")
+    p.add_argument("--split", default=None, help="YYYY-MM-DD: out-of-sample split (train < split, test >=)")
     args = p.parse_args()
 
     tickers = [t.strip().upper() for t in args.tickers.split(",")] if args.tickers else None
     ds = build_dataset(args.start, args.end, args.universe, tickers)  # downloaded once, cached
     if not ds["frames"]:
         print("No data downloaded."); return
+
+    if args.compare and args.split:
+        rows = compare_oos(ds, args.split, capital=args.capital)
+        print(f"\n=== Train/Test @ {args.split} | {ds['names']} names | {args.start} -> {args.end} ===")
+        print(f"{'variation':<27}{'trN':>6}{'trainExpR':>10}{'teN':>6}{'testExpR':>10}{'testPF':>8}")
+        for name, tr, te in rows:
+            trx = f"{tr['expectancy_r']:+.3f}" if tr.get("trades") else "—"
+            tex = f"{te['expectancy_r']:+.3f}" if te.get("trades") else "—"
+            tepf = te.get("profit_factor", "—") if te.get("trades") else "—"
+            print(f"{name:<27}{tr.get('trades', 0):>6}{trx:>10}{te.get('trades', 0):>6}{tex:>10}{str(tepf):>8}")
+        print("\nRobust = positive on BOTH train and test. Strong train + weak/negative test = overfit.")
+        print("(Still survivorship-biased + idealized fills — a holding-up test is necessary, not sufficient.)")
+        return
 
     if args.compare:
         rows = compare(ds, capital=args.capital)
