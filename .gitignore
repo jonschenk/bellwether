@@ -36,3 +36,8 @@ TODO.md
 
 # project context for Claude (keep private)
 CLAUDE.md
+
+# personal strategy variations, trade journal, and the iteration doc (keep private)
+backend/strategies.json
+backend/journal.json
+backend/STRATEGY.md
