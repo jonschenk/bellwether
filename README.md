@@ -1,6 +1,6 @@
 # Swing Scanner
 
-A desktop app that scans the whole US stock market for short-term swing trade setups, the kind you'd hold for 2 to 5 days. It sizes each one to your account and adds a quick AI read on the news. Everything runs locally and it's free to use. No API keys, no accounts, nothing leaves your machine.
+A desktop app that scans the whole US stock market for short-term swing trade setups, the kind you'd hold for 2 to 5 days. It sizes each one to your account and adds a quick AI read on the news. The scan and its local AI run free on your own machine, with no API keys or accounts. There is also an optional deeper analysis that can call a hosted model like Claude for a more thorough, account-aware read on a specific trade.
 
 ![Scanner dashboard](docs/screenshots/dashboard.png)
 
@@ -19,6 +19,7 @@ It's made for finding and researching trades, not placing them. Each card has a 
 - A bulk price/volume pre-screen and a smart price cache keep things quick: a full cold scan runs in about a minute, and re-running or tweaking a filter is near-instant off the cache.
 - Adjustable filters for price, volume, RSI, trend strength, and more.
 - Optional live prices: stream the displayed setups in real time, free and with no API key.
+- Optional deep analysis: an account-aware read on a single setup (the trade thesis, the main risks, and how it fits your existing holdings) from a hosted model like Claude.
 - Runs on macOS and Windows.
 
 ![A single setup card](docs/screenshots/stock-card.png)
@@ -47,6 +48,12 @@ If a stock is too volatile to size safely for your account, it gets flagged inst
 ## AI analysis
 
 Each setup's recent news gets boiled down by an AI model into a couple of sentences, a Bullish, Neutral, or Bearish call, the main risks or catalysts, and a confidence rating. By default this runs on a free local model through Ollama, so nothing leaves your computer. If you'd prefer a hosted model for better writing, set `AI_PROVIDER` in your `.env`.
+
+## Deep analysis
+
+The per-card read above is a quick summary. When you want to think harder about a specific setup, each card has a "Deep analysis" button that asks a hosted model (Claude by default) for a fuller, account-aware case: the trade thesis, the bull case, the main risks, and how the trade fits your other holdings, ending in a Take, Wait, or Pass call. You can enter your current positions once in the Holdings panel so it can weigh sector concentration and overlap, not just the stock on its own.
+
+This is the one part that uses a paid model, so it needs an Anthropic API key in your `.env` and it runs only when you click the button. Each analysis costs a few cents, and the exact cost is shown on the result. It is decision support for your own research, not financial advice, and it never places a trade. You can switch the model with `TRADE_CASE_MODEL` in your `.env`.
 
 ## Live prices
 
