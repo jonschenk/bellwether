@@ -75,14 +75,13 @@ export default function App() {
   const [holdings, setHoldings] = useState(() => localStorage.getItem("holdings") || "");
   const [showHoldings, setShowHoldings] = useState(false);
   const [paper, setPaper] = useState(null); // paper account snapshot (cash/equity/positions)
-  const [showPaper, setShowPaper] = useState(false);
+  const [showPaper, setShowPaper] = useState(true); // paper book open by default
   const [recommending, setRecommending] = useState(false); // batch-triage in flight
   const [liveOn, setLiveOn] = useState(true); // streaming live prices for displayed cards (on by default)
   const [livePrices, setLivePrices] = useState({}); // ticker -> {price, change_percent}
   const pollRef = useRef(null);
   const liveRef = useRef(null);
   const refreshingRef = useRef(false);
-  const paperAutoOpenedRef = useRef(false); // auto-open the paper book once on launch if holding
 
   const stopPolling = () => {
     if (pollRef.current) {
@@ -254,15 +253,6 @@ export default function App() {
       clearInterval(id);
     };
   }, []);
-
-  // On launch, if you already hold open paper positions, open the book automatically
-  // so you see your holdings without having to run a scan first.
-  useEffect(() => {
-    if (!paperAutoOpenedRef.current && paper && (paper.positions?.length ?? 0) > 0) {
-      paperAutoOpenedRef.current = true;
-      setShowPaper(true);
-    }
-  }, [paper]);
 
   const refreshPaper = async () => {
     try {
