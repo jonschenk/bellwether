@@ -11,6 +11,10 @@ import {
   startLive,
   stopLive,
   getLivePrices,
+  getPaperAccount,
+  paperBuy,
+  paperClose,
+  paperReset,
 } from "./api.js";
 import StockCard from "./components/StockCard.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
@@ -18,6 +22,7 @@ import SettingsPanel from "./components/SettingsPanel.jsx";
 const POLL_INTERVAL_MS = 1500;
 const REFRESH_INTERVAL_MS = 180_000; // auto-refresh loaded setups every 3 min
 const LIVE_POLL_INTERVAL_MS = 4000; // pull the latest streamed prices from our backend
+const PAPER_POLL_INTERVAL_MS = 5000; // refresh the paper account (live P&L + bracket fills)
 
 function formatDuration(totalSeconds) {
   const s = Math.max(0, Math.round(totalSeconds));
@@ -33,6 +38,12 @@ function formatClock(epochSeconds) {
 // ThinkorSwim uses a dot for class shares (BRK.B); we store Yahoo's dash (BRK-B).
 function tosSymbols(results) {
   return results.map((r) => r.ticker.replace(/-/g, "."));
+}
+
+// Dollar formatter for the paper book (always 2 decimals, thousands separators).
+function usd(n) {
+  if (typeof n !== "number") return "—";
+  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // Parse the holdings textarea: one position per line, "TICKER SHARES [SECTOR]".
@@ -62,6 +73,8 @@ export default function App() {
   const [exportNote, setExportNote] = useState(""); // transient "copied"/"saved" confirmation
   const [holdings, setHoldings] = useState(() => localStorage.getItem("holdings") || "");
   const [showHoldings, setShowHoldings] = useState(false);
+  const [paper, setPaper] = useState(null); // paper account snapshot (cash/equity/positions)
+  const [showPaper, setShowPaper] = useState(false);
   const [liveOn, setLiveOn] = useState(true); // streaming live prices for displayed cards (on by default)
   const [livePrices, setLivePrices] = useState({}); // ticker -> {price, change_percent}
   const pollRef = useRef(null);
@@ -206,6 +219,57 @@ export default function App() {
     [holdings],
   );
 
+  // Poll the paper account so positions mark to market and bracket fills show up.
+  useEffect(() => {
+    let alive = true;
+    const pull = async () => {
+      try {
+        const a = await getPaperAccount();
+        if (alive) setPaper(a);
+      } catch {
+        /* backend not up yet */
+      }
+    };
+    pull();
+    const id = setInterval(pull, PAPER_POLL_INTERVAL_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  const refreshPaper = async () => {
+    try {
+      setPaper(await getPaperAccount());
+    } catch {
+      /* ignore */
+    }
+  };
+  const onPaperBuy = async (ticker) => {
+    try {
+      const a = await paperBuy(ticker);
+      if (a.error) setError(a.error);
+      else setPaper(a);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+  const onPaperClose = async (tradeId) => {
+    try {
+      setPaper(await paperClose(tradeId));
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+  const onPaperReset = async () => {
+    if (!window.confirm("Reset the paper account to your capital and clear open positions?")) return;
+    try {
+      setPaper(await paperReset());
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const onRunScan = async (fresh = false) => {
     setError(null);
     try {
@@ -218,6 +282,7 @@ export default function App() {
   };
 
   const results = scan.results ?? [];
+  const heldTickers = new Set((paper?.positions || []).map((p) => p.ticker));
 
   const flashExportNote = (msg) => {
     setExportNote(msg);
@@ -427,6 +492,13 @@ export default function App() {
             Holdings{holdings.trim() ? ` (${parseHoldings(holdings).length})` : ""}
           </button>
           <button
+            className={`btn export ${showPaper ? "on" : ""}`}
+            onClick={() => setShowPaper((v) => !v)}
+            title="Your paper account: open positions, live P&L, and auto-close at your stop/target"
+          >
+            Paper book{paper?.positions?.length ? ` (${paper.positions.length})` : ""}
+          </button>
+          <button
             className={`btn export live-toggle ${liveOn ? "on" : ""}`}
             onClick={() => setLiveOn((on) => !on)}
             title="Stream live prices for these cards from Yahoo (free, no key). Updates every few seconds."
@@ -457,6 +529,60 @@ export default function App() {
         </div>
       )}
 
+      {showPaper && paper && (
+        <div className="paper-panel">
+          <div className="paper-summary">
+            <span>Equity <strong>${usd(paper.equity)}</strong></span>
+            <span className="muted">Cash ${usd(paper.cash)}</span>
+            <span className={paper.open_pnl >= 0 ? "pos" : "neg"}>
+              Open {paper.open_pnl >= 0 ? "+" : "−"}${usd(Math.abs(paper.open_pnl))}
+            </span>
+            <span className={paper.realized_pnl >= 0 ? "pos" : "neg"}>
+              Realized {paper.realized_pnl >= 0 ? "+" : "−"}${usd(Math.abs(paper.realized_pnl))}
+            </span>
+            <button className="btn export ghost paper-reset" onClick={onPaperReset} title="Start the paper account fresh from your capital">
+              Reset
+            </button>
+          </div>
+          {paper.positions.length === 0 ? (
+            <p className="muted small">
+              No open paper positions. Hit "Paper buy" on a card to open one — it fills at the
+              live price and auto-closes when it hits your stop or target.
+            </p>
+          ) : (
+            <table className="paper-table">
+              <thead>
+                <tr>
+                  <th>Ticker</th><th>Sh</th><th>Entry</th><th>Now</th><th>P&amp;L</th>
+                  <th>R</th><th>Stop</th><th>Target</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {paper.positions.map((p) => (
+                  <tr key={p.id}>
+                    <td className="pt-ticker">{p.ticker}</td>
+                    <td>{p.shares}</td>
+                    <td>${usd(p.entry)}</td>
+                    <td>${usd(p.current)}</td>
+                    <td className={p.unrealized >= 0 ? "pos" : "neg"}>
+                      {p.unrealized >= 0 ? "+" : "−"}${usd(Math.abs(p.unrealized))} ({p.unrealized_pct >= 0 ? "+" : ""}{p.unrealized_pct}%)
+                    </td>
+                    <td className={(p.r ?? 0) >= 0 ? "pos" : "neg"}>
+                      {p.r == null ? "—" : `${p.r >= 0 ? "+" : ""}${p.r}R`}
+                    </td>
+                    <td>${usd(p.stop)}</td>
+                    <td>${usd(p.target)}</td>
+                    <td>
+                      <button className="paper-close" onClick={() => onPaperClose(p.id)}>Close</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
       <main>
         {!running && scan.status === "done" && results.length === 0 && (
           <div className="empty">
@@ -484,6 +610,8 @@ export default function App() {
               stock={stock}
               onAnalyze={onAnalyze}
               onDeepAnalysis={onDeepAnalysis}
+              onPaperBuy={onPaperBuy}
+              held={heldTickers.has(stock.ticker)}
               live={liveOn ? livePrices[stock.ticker] : null}
             />
           ))}

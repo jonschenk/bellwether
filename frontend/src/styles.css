@@ -434,6 +434,113 @@ body {
   padding-top: 8px;
 }
 
+/* ---------- paper trading ---------- */
+.paper-buy-row {
+  margin-top: 12px;
+}
+
+.paper-buy-btn {
+  width: 100%;
+  background: rgba(74, 222, 128, 0.1);
+  border: 1px solid var(--green);
+  color: var(--green);
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.paper-buy-btn:hover:not(:disabled) {
+  background: rgba(74, 222, 128, 0.18);
+}
+
+.paper-buy-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.paper-held {
+  display: block;
+  text-align: center;
+  font-size: 12px;
+  color: var(--green);
+  padding: 6px;
+}
+
+.paper-panel {
+  margin: -8px 0 18px;
+  padding: 12px 14px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.paper-summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.paper-reset {
+  margin-left: auto;
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.paper-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.paper-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.paper-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.paper-table .pt-ticker {
+  font-weight: 600;
+}
+
+.paper-close {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 6px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.paper-close:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.pos {
+  color: var(--green);
+}
+
+.neg {
+  color: var(--red);
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

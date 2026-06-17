@@ -31,8 +31,9 @@ function money(v) {
   return v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-export default function StockCard({ stock, onAnalyze, onDeepAnalysis, live }) {
+export default function StockCard({ stock, onAnalyze, onDeepAnalysis, onPaperBuy, held, live }) {
   const [copied, setCopied] = useState(false);
+  const [buying, setBuying] = useState(false);
   const [showCase, setShowCase] = useState(false); // expanded deep-analysis details
   const tc = stock.trade_case;
   const tcPending = stock.tc_status === "pending";
@@ -207,6 +208,29 @@ export default function StockCard({ stock, onAnalyze, onDeepAnalysis, live }) {
           </div>
         </>
       )}
+
+      {/* ---- paper trade ---- */}
+      <div className="paper-buy-row" onClick={(e) => e.stopPropagation()}>
+        {held ? (
+          <span className="paper-held">✓ In paper book</span>
+        ) : (
+          <button
+            className="paper-buy-btn"
+            disabled={buying}
+            title="Open a simulated position at the live price; auto-closes at the stop or target"
+            onClick={async () => {
+              setBuying(true);
+              try {
+                await onPaperBuy?.(stock.ticker);
+              } finally {
+                setBuying(false);
+              }
+            }}
+          >
+            {buying ? "Buying…" : `📈 Paper buy ${stock.plan?.shares ?? ""} sh`}
+          </button>
+        )}
+      </div>
 
       {/* ---- account-aware deep analysis (Claude, on demand) ---- */}
       <div className="deep" onClick={(e) => e.stopPropagation()}>

@@ -29,6 +29,13 @@ export const deepAnalyze = (ticker, positions = []) =>
   request("/api/trade-case", { method: "POST", body: JSON.stringify({ ticker, positions }) });
 export const getScanStatus = () => request("/api/scan/status");
 export const getHealth = () => request("/api/health");
+export const getPaperAccount = () => request("/api/paper/account");
+export const paperBuy = (ticker) =>
+  request("/api/paper/buy", { method: "POST", body: JSON.stringify({ ticker }) });
+export const paperClose = (trade_id) =>
+  request("/api/paper/close", { method: "POST", body: JSON.stringify({ trade_id }) });
+export const paperReset = (capital) =>
+  request("/api/paper/reset", { method: "POST", body: JSON.stringify({ capital }) });
 export const startLive = () => request("/api/live/start", { method: "POST" });
 export const stopLive = () => request("/api/live/stop", { method: "POST" });
 export const getLivePrices = () => request("/api/live");

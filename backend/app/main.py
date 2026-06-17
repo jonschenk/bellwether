@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from .ai import analyze_all, analyze_single
 from .config import ScanSettings, load_settings, save_settings
 from . import price_cache
+from . import paper
 from .live import live
 from .scanner import refresh_results, scan_market
 from .trade_case import trade_case
@@ -210,6 +211,59 @@ async def live_prices() -> dict:
     return live.prices()
 
 
+class PaperBuyRequest(BaseModel):
+    ticker: str
+
+
+class PaperCloseRequest(BaseModel):
+    trade_id: str
+    exit_price: float | None = None
+
+
+class PaperResetRequest(BaseModel):
+    capital: float | None = None
+
+
+@app.get("/api/paper/account")
+async def paper_account() -> dict:
+    return paper.account()
+
+
+@app.post("/api/paper/buy")
+async def paper_buy(req: PaperBuyRequest) -> dict:
+    """Open a paper position for a currently-scanned ticker, filled at the live price."""
+    rows = scan_state.get("results") or []
+    stock = next((r for r in rows if r["ticker"] == req.ticker), None)
+    if stock is None:
+        raise HTTPException(status_code=404, detail="Ticker is not in the current results")
+    return await asyncio.to_thread(paper.buy, stock)
+
+
+@app.post("/api/paper/close")
+async def paper_close(req: PaperCloseRequest) -> dict:
+    return await asyncio.to_thread(paper.close, req.trade_id, req.exit_price)
+
+
+@app.post("/api/paper/reset")
+async def paper_reset(req: PaperResetRequest) -> dict:
+    capital = req.capital if req.capital is not None else load_settings().capital
+    return paper.reset(capital)
+
+
+_paper_monitor: asyncio.Task | None = None
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    global _paper_monitor
+    # Seed a fresh paper account from the user's capital on first run.
+    if not paper.ACCOUNT_PATH.exists():
+        paper.reset(load_settings().capital)
+    _paper_monitor = asyncio.create_task(paper.monitor_loop())
+
+
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     await live.stop()
+    if _paper_monitor:
+        _paper_monitor.cancel()
