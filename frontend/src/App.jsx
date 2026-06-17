@@ -43,7 +43,7 @@ export default function App() {
   const [error, setError] = useState(null);
   const [now, setNow] = useState(Date.now() / 1000); // ticks each second while running
   const [exportNote, setExportNote] = useState(""); // transient "copied"/"saved" confirmation
-  const [liveOn, setLiveOn] = useState(false); // streaming live prices for displayed cards
+  const [liveOn, setLiveOn] = useState(true); // streaming live prices for displayed cards (on by default)
   const [livePrices, setLivePrices] = useState({}); // ticker -> {price, change_percent}
   const pollRef = useRef(null);
   const liveRef = useRef(null);
@@ -368,6 +368,7 @@ export default function App() {
 
       {scan.status === "done" && results.length > 0 && (
         <div className="export-bar">
+          {/* ThinkorSwim export disabled for now — re-enable by uncommenting.
           <button className="btn export" onClick={copyForToS} title="Copy all tickers for ThinkorSwim's 'Paste symbols from clipboard' import">
             Copy tickers for ThinkorSwim
           </button>
@@ -375,6 +376,7 @@ export default function App() {
             Export .csv
           </button>
           {exportNote && <span className="export-note muted small">{exportNote} ✓</span>}
+          */}
           <button
             className={`btn export live-toggle ${liveOn ? "on" : ""}`}
             onClick={() => setLiveOn((on) => !on)}
