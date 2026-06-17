@@ -18,19 +18,28 @@ the user places any trade themselves.
 import asyncio
 import json
 import logging
+import os
 
 from .ai import _anthropic_key, _fetch_news
 from .config import ScanSettings
 
 log = logging.getLogger(__name__)
 
-# Sonnet is the sweet spot for this multi-factor reasoning at ~60% of Opus cost.
-# Swap to "claude-opus-4-8" for the hardest calls (and ~2x the per-case cost).
-TRADE_CASE_MODEL = "claude-sonnet-4-6"
+# Default to the smartest model — this is real-money decision support and the
+# cost delta over Sonnet is ~1c/call. Override with TRADE_CASE_MODEL in .env
+# (e.g. claude-sonnet-4-6 to economize).
+DEFAULT_TRADE_CASE_MODEL = "claude-opus-4-8"
 
-# Current Sonnet 4.6 pricing, $ per million tokens (for the visible cost estimate).
-_PRICE_IN_PER_M = 3.0
-_PRICE_OUT_PER_M = 15.0
+# $ per million tokens (input, output) for the visible cost estimate.
+_PRICES = {
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
+
+
+def _model() -> str:
+    return os.environ.get("TRADE_CASE_MODEL", DEFAULT_TRADE_CASE_MODEL).strip()
 
 TRADE_CASE_SCHEMA = {
     "type": "object",
@@ -150,10 +159,11 @@ async def trade_case(
 
     import anthropic
 
+    model = _model()
     client = anthropic.AsyncAnthropic()
     try:
         resp = await client.messages.create(
-            model=TRADE_CASE_MODEL,
+            model=model,
             max_tokens=1500,
             output_config={"format": {"type": "json_schema", "schema": TRADE_CASE_SCHEMA}},
             messages=[{"role": "user", "content": _build_prompt(stock, settings, positions, news)}],
@@ -167,11 +177,12 @@ async def trade_case(
 
     case = json.loads(next(b.text for b in resp.content if b.type == "text"))
     tin, tout = resp.usage.input_tokens, resp.usage.output_tokens
+    price_in, price_out = _PRICES.get(model, _PRICES[DEFAULT_TRADE_CASE_MODEL])
     case["_meta"] = {
-        "model": TRADE_CASE_MODEL,
+        "model": model,
         "input_tokens": tin,
         "output_tokens": tout,
-        "cost_usd": round(tin / 1e6 * _PRICE_IN_PER_M + tout / 1e6 * _PRICE_OUT_PER_M, 4),
+        "cost_usd": round(tin / 1e6 * price_in + tout / 1e6 * price_out, 4),
         "news_count": len(news),
     }
     return case
