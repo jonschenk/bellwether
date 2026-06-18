@@ -248,12 +248,20 @@ def _simulate(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int, slipp
 # (reversion to the 5-SMA), no RS/52w-high/ADX requirements. Targets the chop where momentum dies.
 
 def _signal_mask_meanrev(ind: pd.DataFrame, s: ScanSettings) -> pd.Series:
-    return (
+    # base: a quality name (above its 200-SMA), deeply oversold short-term, stretched below
+    # the 5-SMA. The thresholds are now tunable so we can trade FEWER, BETTER dips — the fix
+    # for a high-frequency edge that costs were eating alive.
+    stretch_pct = (ind["sma5"] - ind["close"]) / ind["sma5"] * 100
+    mask = (
         (ind["close"] > s.min_price) & (ind["avgvol"] > s.min_avg_volume)
-        & (ind["close"] > ind["sma200"])   # quality: long-term uptrend (no broken stocks)
-        & (ind["rsi2"] < 10)               # deeply oversold short-term (Connors-style)
-        & (ind["close"] < ind["sma5"])     # stretched below the short MA
+        & (ind["close"] > ind["sma200"])         # quality: long-term uptrend (no broken stocks)
+        & (ind["rsi2"] < s.mr_rsi2_max)          # deeply oversold short-term (Connors-style)
+        & (ind["close"] < ind["sma5"])           # stretched below the short MA
+        & (stretch_pct >= s.mr_min_stretch_pct)  # ...by at least this much (a real dip)
     )
+    if s.mr_require_uptrend:                      # don't catch knives: dip must sit in a real uptrend
+        mask = mask & (ind["sma50"] > ind["sma200"]) & (ind["sma200"] > ind["sma200_prior"])
+    return mask
 
 
 def _simulate_meanrev(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int, slippage_bps: float = 0.0) -> Trade | None:
@@ -454,15 +462,23 @@ CANDIDATES = [
     ("3R uncapped + ADX30 + breadth>=50", {"reward_mult": 3.0, "cap_target_at_high": False, "adx_min": 30.0, "min_breadth_pct": 50.0}, 10),
 ]
 
-# Mean-reversion candidates (RSI(2)<10 oversold entry hardcoded; vary the protective stop +
-# hold). Run with --strategy mean_reversion.
+# Mean-reversion candidates. Run with --strategy mean_reversion. The first block is the loose
+# baseline (RSI2<10, any dip) we already proved costs eat alive; the rest tighten the entry to
+# trade FEWER, BETTER dips so each trade's edge can clear the slippage drag. Levers: mr_rsi2_max
+# (oversold depth), mr_min_stretch_pct (how far below the 5-SMA), mr_require_uptrend (quality gate).
+# Stop=2.5xATR / hold=10 was the prior best, so it's held fixed while we vary selectivity.
+_MR_BASE = {"atr_stop_mult": 2.5}
 MEANREV_CANDIDATES = [
-    ("meanrev stop1.5ATR hold10", {"atr_stop_mult": 1.5}, 10),
-    ("meanrev stop2.5ATR hold10", {"atr_stop_mult": 2.5}, 10),
-    ("meanrev stop3ATR hold10", {"atr_stop_mult": 3.0}, 10),
-    ("meanrev stop2.5ATR hold5", {"atr_stop_mult": 2.5}, 5),
-    ("meanrev stop2.5ATR hold15", {"atr_stop_mult": 2.5}, 15),
-    ("meanrev stop3ATR hold5", {"atr_stop_mult": 3.0}, 5),
+    ("loose RSI2<10 (baseline)", {**_MR_BASE}, 10),
+    ("RSI2<5", {**_MR_BASE, "mr_rsi2_max": 5.0}, 10),
+    ("RSI2<3", {**_MR_BASE, "mr_rsi2_max": 3.0}, 10),
+    ("RSI2<10 + stretch>=2%", {**_MR_BASE, "mr_min_stretch_pct": 2.0}, 10),
+    ("RSI2<10 + stretch>=4%", {**_MR_BASE, "mr_min_stretch_pct": 4.0}, 10),
+    ("RSI2<5 + stretch>=3%", {**_MR_BASE, "mr_rsi2_max": 5.0, "mr_min_stretch_pct": 3.0}, 10),
+    ("RSI2<5 + uptrend", {**_MR_BASE, "mr_rsi2_max": 5.0, "mr_require_uptrend": True}, 10),
+    ("RSI2<5 + stretch>=3% + uptrend", {**_MR_BASE, "mr_rsi2_max": 5.0, "mr_min_stretch_pct": 3.0, "mr_require_uptrend": True}, 10),
+    ("RSI2<3 + stretch>=4% + uptrend", {**_MR_BASE, "mr_rsi2_max": 3.0, "mr_min_stretch_pct": 4.0, "mr_require_uptrend": True}, 10),
+    ("RSI2<5 + uptrend, hold5", {**_MR_BASE, "mr_rsi2_max": 5.0, "mr_require_uptrend": True}, 5),
 ]
 
 

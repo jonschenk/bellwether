@@ -25,6 +25,11 @@ class ScanSettings(BaseModel):
     require_market_uptrend: bool = Field(default=False)  # only enter when SPY > its 200-SMA (regime filter; backtest)
     min_breadth_pct: float = Field(default=0.0, ge=0, le=100)  # only enter when >= this % of the universe is above its 200-SMA (0 = off; backtest)
 
+    # --- mean-reversion strategy knobs (backtest --strategy mean_reversion) ---
+    mr_rsi2_max: float = Field(default=10.0, gt=0, le=100)  # oversold trigger: RSI(2) must be BELOW this (lower = more selective)
+    mr_min_stretch_pct: float = Field(default=0.0, ge=0)  # require close >= this % below the 5-SMA (a real dip, not a graze; 0 = off)
+    mr_require_uptrend: bool = Field(default=False)  # quality: only buy dips when 50>200 SMA stack AND the 200-SMA is rising
+
     # --- liquidity / price ---
     min_price: float = Field(default=15.0, ge=0)
     min_avg_volume: int = Field(default=500_000, ge=0)
