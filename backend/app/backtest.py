@@ -19,11 +19,12 @@ target fill exactly at the level, no slippage/gaps).
 """
 
 import argparse
+import csv
 import datetime as dt
 import hashlib
 import logging
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 import pandas as pd
@@ -44,6 +45,28 @@ DEFAULT_CAPITAL = 1_000_000
 
 # Cache the (slow) raw download so re-runs and variation sweeps don't re-fetch.
 CACHE_DIR = Path(__file__).resolve().parents[1] / ".backtest_cache"
+# The readable R&D briefing the backtester writes its results to (gitignored).
+STRATEGY_MD = Path(__file__).resolve().parents[1] / "STRATEGY.md"
+
+
+def export_trades_csv(trades: list, path: str) -> str:
+    cols = [f.name for f in fields(Trade)]
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(cols)
+        for t in trades:
+            w.writerow([getattr(t, c) for c in cols])
+    return path
+
+
+def write_strategy_md(title: str, table_md: str, note: str = "") -> Path:
+    """Persist a backtest run/sweep to STRATEGY.md — the doc any session reads to see where the
+    strategy R&D stands (what's been tried, what won, what to try next)."""
+    stamp = dt.datetime.now().isoformat(timespec="seconds")
+    STRATEGY_MD.write_text(
+        f"# Strategy backtest\n\n_generated {stamp}_\n\n## {title}\n\n{table_md}\n\n{note}\n"
+    )
+    return STRATEGY_MD
 
 
 # ----------------------------------------------------------------- data
@@ -385,6 +408,7 @@ def main() -> None:
     p.add_argument("--capital", type=float, default=DEFAULT_CAPITAL)
     p.add_argument("--compare", action="store_true", help="sweep the built-in candidate variations")
     p.add_argument("--split", default=None, help="YYYY-MM-DD: out-of-sample split (train < split, test >=)")
+    p.add_argument("--csv", default=None, help="write trades to this CSV path (single-variation run)")
     args = p.parse_args()
 
     tickers = [t.strip().upper() for t in args.tickers.split(",")] if args.tickers else None
@@ -403,6 +427,16 @@ def main() -> None:
             print(f"{name:<27}{tr.get('trades', 0):>6}{trx:>10}{te.get('trades', 0):>6}{tex:>10}{str(tepf):>8}")
         print("\nRobust = positive on BOTH train and test. Strong train + weak/negative test = overfit.")
         print("(Still survivorship-biased + idealized fills — a holding-up test is necessary, not sufficient.)")
+        md = ["| variation | trN | train expR | teN | test expR | test PF |", "| --- | --- | --- | --- | --- | --- |"]
+        for name, tr, te in rows:
+            md.append(f"| {name} | {tr.get('trades', 0)} | {tr.get('expectancy_r', '—')} | "
+                      f"{te.get('trades', 0)} | {te.get('expectancy_r', '—')} | {te.get('profit_factor', '—')} |")
+        write_strategy_md(
+            f"Train/Test @ {args.split} | {ds['names']} names | {args.start} → {args.end}",
+            "\n".join(md),
+            "Robust = positive on BOTH train and test. Survivorship-biased + idealized fills — validate forward in paper.",
+        )
+        print(f"(written to {STRATEGY_MD.name})")
         return
 
     if args.compare:
@@ -415,6 +449,14 @@ def main() -> None:
             print(f"{name:<27}{s['trades']:>7}{s['win_rate']:>7}{s['expectancy_r']:>+8.3f}"
                   f"{s['profit_factor']:>6}{s['max_drawdown_r']:>7}{s['total_r']:>+8.1f}")
         print("\n(Hypothesis only — survivorship-biased universe, idealized fills. Validate forward in paper.)")
+        md = ["| variation | trades | win% | expR | PF | maxDD | totR |", "| --- | --- | --- | --- | --- | --- | --- |"]
+        for name, s in rows:
+            if s.get("trades"):
+                md.append(f"| {name} | {s['trades']} | {s['win_rate']} | {s['expectancy_r']} | "
+                          f"{s['profit_factor']} | {s['max_drawdown_r']} | {s['total_r']} |")
+        write_strategy_md(f"Variation sweep | {ds['names']} names | {args.start} → {args.end}", "\n".join(md),
+                          "Hypothesis only — survivorship-biased + idealized fills. Validate forward in paper.")
+        print(f"(written to {STRATEGY_MD.name})")
         return
 
     # single-variation run
@@ -427,7 +469,8 @@ def main() -> None:
     except Exception:
         pass
     settings = ScanSettings(capital=args.capital, **params)
-    s = run_on_dataset(ds, settings, args.max_hold)["stats"]
+    res = run_on_dataset(ds, settings, args.max_hold)
+    s = res["stats"]
     print(f"\n=== Backtest {args.start} -> {args.end} | {ds['names']} names | max-hold {args.max_hold}d ===")
     if not s.get("trades"):
         print("No trades generated."); return
@@ -438,6 +481,9 @@ def main() -> None:
     print(f"Total:         {s['total_r']:+}R   max drawdown: {s['max_drawdown_r']}R")
     print(f"Avg win/loss:  {s['avg_win_r']:+}R / {s['avg_loss_r']:+}R   avg hold {s['avg_hold_days']}d")
     print(f"Exits:         target {s['exits']['target']} | stop {s['exits']['stop']} | time {s['exits']['time']}")
+    if args.csv:
+        export_trades_csv(res["trades"], args.csv)
+        print(f"(wrote {len(res['trades'])} trades to {args.csv})")
     print("\n(Hypothesis only — survivorship-biased universe, idealized fills. Validate forward in paper.)")
 
 
