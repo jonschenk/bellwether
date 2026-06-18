@@ -19,6 +19,7 @@ from .config import ScanSettings, load_settings, save_settings
 from . import price_cache
 from . import paper
 from . import journal
+from . import regime as regime_mod
 from .live import live
 from .scanner import refresh_results, scan_market
 from .trade_case import trade_case
@@ -88,6 +89,13 @@ async def _run_scan(force_fresh: bool = False) -> None:
 @app.get("/api/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/api/regime")
+async def get_regime() -> dict:
+    """Today's market regime (bull/chop/bear) + the strategy the validated router would run.
+    Decision-support display only — it never trades. Cached ~1h in the module."""
+    return await asyncio.to_thread(regime_mod.current_regime)
 
 
 def _settings_dict(settings: ScanSettings) -> dict:

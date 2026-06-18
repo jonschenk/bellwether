@@ -17,6 +17,7 @@ import {
   paperClose,
   paperReset,
   getJournal,
+  getRegime,
 } from "./api.js";
 import StockCard from "./components/StockCard.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
@@ -104,6 +105,7 @@ export default function App() {
   const [showJournal, setShowJournal] = useState(false);
   const [liveOn, setLiveOn] = useState(true); // streaming live prices for displayed cards (on by default)
   const [livePrices, setLivePrices] = useState({}); // ticker -> {price, change_percent}
+  const [regime, setRegime] = useState(null); // {regime, label, strategy, ...} the router's current call
   const pollRef = useRef(null);
   const liveRef = useRef(null);
   const refreshingRef = useRef(false);
@@ -301,6 +303,26 @@ export default function App() {
     const id = setInterval(refreshJournal, 10000);
     return () => clearInterval(id);
   }, [showJournal]);
+
+  // Market-regime badge: fetch once on load, then refresh every 30 min. The 200-SMA regime
+  // barely moves intraday (the backend caches it ~1h), so this is deliberately infrequent.
+  useEffect(() => {
+    let alive = true;
+    const pull = async () => {
+      try {
+        const r = await getRegime();
+        if (alive) setRegime(r);
+      } catch {
+        /* leave the last value; the badge just won't update */
+      }
+    };
+    pull();
+    const id = setInterval(pull, 1_800_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
   const onPaperBuy = async (ticker) => {
     try {
       const a = await paperBuy(ticker);
@@ -447,6 +469,21 @@ export default function App() {
           <span className="brand-dot" />
           <h1>Swing Scanner</h1>
           <span className="brand-sub">2–5 day setups · uptrend pullbacks</span>
+          {regime?.available && (
+            <span
+              className={`regime-badge regime-${regime.regime}`}
+              title={
+                `${regime.description}\n\n` +
+                `SPY ${regime.spy_price} · ${regime.spy_pct_vs_sma200 >= 0 ? "+" : ""}` +
+                `${regime.spy_pct_vs_sma200}% vs its 200-SMA (${regime.spy_sma200}), ` +
+                `${regime.sma200_rising ? "rising" : "falling"}.\n` +
+                `The validated router would run: ${regime.strategy}.`
+              }
+            >
+              <span className="regime-key">{regime.label}</span>
+              <span className="regime-strategy">→ {regime.strategy}</span>
+            </span>
+          )}
         </div>
         <div className="topbar-actions">
           <label className="capital-input" title="Your trading capital — drives position sizing and the price ceiling">

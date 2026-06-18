@@ -31,6 +31,7 @@ export const getRecommendations = (positions = [], top_n = 12) =>
   request("/api/recommend", { method: "POST", body: JSON.stringify({ positions, top_n }) });
 export const getScanStatus = () => request("/api/scan/status");
 export const getHealth = () => request("/api/health");
+export const getRegime = () => request("/api/regime");
 export const getPaperAccount = () => request("/api/paper/account");
 export const getJournal = () => request("/api/journal");
 export const paperBuy = (ticker) =>
