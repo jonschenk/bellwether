@@ -66,6 +66,24 @@ def _download(tickers: list[str], start: str, end: str) -> dict[str, pd.DataFram
     return out
 
 
+def _market_up_series(start: str, end: str) -> pd.Series | None:
+    """Boolean series: is the broad market (SPY) in an uptrend (close > its 200-SMA) on each
+    day? Used as an as-of regime gate. None if SPY can't be fetched (filter then no-ops)."""
+    try:
+        spy = yf.download("SPY", start=start, end=end, interval="1d", auto_adjust=True, progress=False)
+        close = spy["Close"]
+        if isinstance(close, pd.DataFrame):
+            close = close.iloc[:, 0]
+        sma200 = close.rolling(200).mean()
+        # Bull regime = price above the 200-SMA AND the 200-SMA rising (over ~1mo). The
+        # "rising" condition is what excludes bear-market bounces (falling 200-SMA), which a
+        # plain price>200SMA gate lets through as bull traps.
+        return (close > sma200) & (sma200 > sma200.shift(21))
+    except Exception:
+        log.exception("SPY download for the regime filter failed")
+        return None
+
+
 # ----------------------------------------------------------------- as-of indicator frames
 
 def _indicator_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -180,10 +198,15 @@ def _simulate(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int) -> Tr
     )
 
 
-def _trades_for(ticker: str, ind: pd.DataFrame, rs: pd.Series, s: ScanSettings, max_hold: int) -> list[Trade]:
+def _trades_for(
+    ticker: str, ind: pd.DataFrame, rs: pd.Series, s: ScanSettings, max_hold: int,
+    market_up: pd.Series | None = None,
+) -> list[Trade]:
     """All non-overlapping trades for one ticker: take each signal, but don't re-enter the
     same name while a position in it is still open."""
     sig = _signal_mask(ind, rs.reindex(ind.index), s)
+    if s.require_market_uptrend and market_up is not None:
+        sig = sig & market_up.reindex(ind.index).fillna(False)
     trades: list[Trade] = []
     in_until_loc = -1
     locs = [ind.index.get_loc(d) for d in sig.index[sig.fillna(False)]]
@@ -270,14 +293,16 @@ def build_dataset(start: str, end: str, universe: str = "curated", tickers: list
         log.info("Loaded %d names from cache", len(frames_raw))
     frames = {t: _indicator_frame(df) for t, df in frames_raw.items()}
     rs = _rs_table(frames) if frames else pd.DataFrame()
-    return {"frames": frames, "rs": rs, "start": start, "end": end, "names": len(frames)}
+    market_up = _market_up_series(start, end)
+    return {"frames": frames, "rs": rs, "market_up": market_up, "start": start, "end": end, "names": len(frames)}
 
 
 def run_on_dataset(ds: dict, settings: ScanSettings, max_hold: int = DEFAULT_MAX_HOLD) -> dict:
     """Run ONE variation against a prebuilt dataset — the cheap, repeatable part."""
     trades: list[Trade] = []
+    market_up = ds.get("market_up")
     for t, ind in ds["frames"].items():
-        trades.extend(_trades_for(t, ind, ds["rs"][t], settings, max_hold))
+        trades.extend(_trades_for(t, ind, ds["rs"][t], settings, max_hold, market_up))
     trades.sort(key=lambda x: x.entry_date)
     return {"stats": _stats(trades), "trades": trades}
 
@@ -314,6 +339,10 @@ CANDIDATES = [
     ("2R uncapped + ADX>=30", {"cap_target_at_high": False, "adx_min": 30.0}, 10),
     ("3R uncapped + ADX>=30", {"reward_mult": 3.0, "cap_target_at_high": False, "adx_min": 30.0}, 10),
     ("3R uncapped + ADX30 + RS80", {"reward_mult": 3.0, "cap_target_at_high": False, "adx_min": 30.0, "min_rs_rating": 80.0}, 10),
+    # regime-gated: only enter when SPY is in an uptrend (the bear-market fix to test)
+    ("baseline + mkt-up", {"require_market_uptrend": True}, 10),
+    ("2R uncapped + mkt-up", {"cap_target_at_high": False, "require_market_uptrend": True}, 10),
+    ("3R uncapped + ADX30 + mkt-up", {"reward_mult": 3.0, "cap_target_at_high": False, "adx_min": 30.0, "require_market_uptrend": True}, 10),
 ]
 
 

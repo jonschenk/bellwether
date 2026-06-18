@@ -22,6 +22,7 @@ class ScanSettings(BaseModel):
     atr_stop_mult: float = Field(default=1.5, gt=0)  # stop = entry - mult * ATR
     reward_mult: float = Field(default=2.0, gt=0)  # target = entry + mult * stop distance
     cap_target_at_high: bool = Field(default=True)  # cap the target at the 52w high (off = pure R:R)
+    require_market_uptrend: bool = Field(default=False)  # only enter when SPY > its 200-SMA (regime filter; backtest)
 
     # --- liquidity / price ---
     min_price: float = Field(default=15.0, ge=0)
