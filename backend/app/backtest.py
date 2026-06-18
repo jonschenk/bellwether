@@ -187,7 +187,19 @@ def _signal_mask(ind: pd.DataFrame, rs: pd.Series, s: ScanSettings) -> pd.Series
     )
 
 
-def _simulate(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int) -> Trade | None:
+def _apply_costs(entry: float, exit_price: float, stop: float, slippage_bps: float) -> tuple[float, float, float]:
+    """Apply per-side slippage (bps of price) to the entry (buy higher) and exit (sell lower),
+    then recompute the R-multiple off the actual fills. Stock commissions are ~$0 now, so
+    slippage is the dominant modelable cost. Conservative: applied to every exit type."""
+    k = slippage_bps / 10000.0
+    entry_fill = entry * (1 + k)
+    exit_fill = exit_price * (1 - k)
+    rps = entry_fill - stop
+    r = (exit_fill - entry_fill) / rps if rps > 0 else 0.0
+    return entry_fill, exit_fill, r
+
+
+def _simulate(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int, slippage_bps: float = 0.0) -> Trade | None:
     """Enter at the NEXT bar's open after the signal at position `loc`; walk forward up to
     max_hold bars applying the bracket (stop/target) then a time-stop. Stop is checked before
     target on a same-day touch of both (conservative)."""
@@ -214,17 +226,16 @@ def _simulate(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int) -> Tr
     if exit_price is None:  # time-stop at the close of the last bar in the window
         exit_price, exit_reason, exit_loc = float(ind["close"].iloc[last]), "time", last
 
-    rps = entry - stop
-    r = (exit_price - entry) / rps if rps > 0 else 0.0
+    entry_fill, exit_fill, r = _apply_costs(entry, exit_price, stop, slippage_bps)
     return Trade(
         ticker="",  # filled by caller
         signal_date=str(ind.index[loc].date()),
         entry_date=str(ind.index[loc + 1].date()),
-        entry=round(entry, 2),
+        entry=round(entry_fill, 2),
         stop=round(stop, 2),
         target=round(target, 2),
         exit_date=str(ind.index[exit_loc].date()),
-        exit=round(exit_price, 2),
+        exit=round(exit_fill, 2),
         exit_reason=exit_reason,
         r_multiple=round(r, 2),
         hold_days=exit_loc - (loc + 1),
@@ -245,7 +256,7 @@ def _signal_mask_meanrev(ind: pd.DataFrame, s: ScanSettings) -> pd.Series:
     )
 
 
-def _simulate_meanrev(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int) -> Trade | None:
+def _simulate_meanrev(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int, slippage_bps: float = 0.0) -> Trade | None:
     """Enter next open; exit on the reversion (a close back above the 5-SMA), a protective ATR
     stop, or a time-stop. Exit is condition-based, not a fixed target."""
     if loc + 1 >= len(ind):
@@ -267,12 +278,12 @@ def _simulate_meanrev(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: in
             break
     if exit_price is None:
         exit_price, exit_reason, exit_loc = float(ind["close"].iloc[last]), "time", last
-    rps = entry - stop
-    r = (exit_price - entry) / rps if rps > 0 else 0.0
+    target_nominal = entry + s.reward_mult * (entry - stop)
+    entry_fill, exit_fill, r = _apply_costs(entry, exit_price, stop, slippage_bps)
     return Trade(
         ticker="", signal_date=str(ind.index[loc].date()), entry_date=str(ind.index[loc + 1].date()),
-        entry=round(entry, 2), stop=round(stop, 2), target=round(entry + s.reward_mult * rps, 2),
-        exit_date=str(ind.index[exit_loc].date()), exit=round(exit_price, 2), exit_reason=exit_reason,
+        entry=round(entry_fill, 2), stop=round(stop, 2), target=round(target_nominal, 2),
+        exit_date=str(ind.index[exit_loc].date()), exit=round(exit_fill, 2), exit_reason=exit_reason,
         r_multiple=round(r, 2), hold_days=exit_loc - (loc + 1),
         outcome="win" if r > 0 else ("loss" if r < 0 else "scratch"),
     )
@@ -281,7 +292,7 @@ def _simulate_meanrev(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: in
 def _trades_for(
     ticker: str, ind: pd.DataFrame, rs: pd.Series, s: ScanSettings, max_hold: int,
     market_up: pd.Series | None = None, breadth: pd.Series | None = None,
-    strategy: str = "leader_pullback",
+    strategy: str = "leader_pullback", slippage_bps: float = 0.0,
 ) -> list[Trade]:
     """All non-overlapping trades for one ticker: take each signal, but don't re-enter the
     same name while a position in it is still open. Dispatches on `strategy`."""
@@ -302,7 +313,7 @@ def _trades_for(
     for loc in locs:
         if loc < MIN_BARS or loc <= in_until_loc:
             continue
-        t = simulate(ind, loc, s, max_hold)
+        t = simulate(ind, loc, s, max_hold, slippage_bps)
         if t is None:
             continue
         t.ticker = ticker
@@ -389,12 +400,12 @@ def build_dataset(start: str, end: str, universe: str = "curated", tickers: list
 
 
 def run_on_dataset(ds: dict, settings: ScanSettings, max_hold: int = DEFAULT_MAX_HOLD,
-                   strategy: str = "leader_pullback") -> dict:
+                   strategy: str = "leader_pullback", slippage_bps: float = 0.0) -> dict:
     """Run ONE variation against a prebuilt dataset — the cheap, repeatable part."""
     trades: list[Trade] = []
     market_up, breadth = ds.get("market_up"), ds.get("breadth")
     for t, ind in ds["frames"].items():
-        trades.extend(_trades_for(t, ind, ds["rs"][t], settings, max_hold, market_up, breadth, strategy))
+        trades.extend(_trades_for(t, ind, ds["rs"][t], settings, max_hold, market_up, breadth, strategy, slippage_bps))
     trades.sort(key=lambda x: x.entry_date)
     return {"stats": _stats(trades), "trades": trades}
 
@@ -456,9 +467,9 @@ MEANREV_CANDIDATES = [
 
 
 def compare(ds: dict, candidates=CANDIDATES, capital: float = DEFAULT_CAPITAL,
-            strategy: str = "leader_pullback") -> list[tuple[str, dict]]:
+            strategy: str = "leader_pullback", slippage_bps: float = 0.0) -> list[tuple[str, dict]]:
     """Run each candidate variation against the same dataset; return rows sorted by expectancy."""
-    rows = [(name, run_on_dataset(ds, ScanSettings(capital=capital, **ov), mh, strategy)["stats"]) for name, ov, mh in candidates]
+    rows = [(name, run_on_dataset(ds, ScanSettings(capital=capital, **ov), mh, strategy, slippage_bps)["stats"]) for name, ov, mh in candidates]
     rows.sort(key=lambda r: r[1].get("expectancy_r", -99), reverse=True)
     return rows
 
@@ -472,12 +483,12 @@ def _split_stats(trades: list[Trade], split: str) -> tuple[dict, dict]:
 
 
 def compare_oos(ds: dict, split: str, candidates=CANDIDATES, capital: float = DEFAULT_CAPITAL,
-                strategy: str = "leader_pullback") -> list:
+                strategy: str = "leader_pullback", slippage_bps: float = 0.0) -> list:
     """Out-of-sample comparison: each variation's train vs test expectancy. Sorted by TEST
     expectancy — that's the number that matters (does the edge hold on unseen data?)."""
     rows = []
     for name, ov, mh in candidates:
-        trades = run_on_dataset(ds, ScanSettings(capital=capital, **ov), mh, strategy)["trades"]
+        trades = run_on_dataset(ds, ScanSettings(capital=capital, **ov), mh, strategy, slippage_bps)["trades"]
         tr, te = _split_stats(trades, split)
         rows.append((name, tr, te))
     rows.sort(key=lambda r: r[2].get("expectancy_r", -99), reverse=True)
@@ -498,8 +509,10 @@ def main() -> None:
     p.add_argument("--split", default=None, help="YYYY-MM-DD: out-of-sample split (train < split, test >=)")
     p.add_argument("--csv", default=None, help="write trades to this CSV path (single-variation run)")
     p.add_argument("--strategy", default="leader_pullback", choices=["leader_pullback", "mean_reversion"])
+    p.add_argument("--slippage-bps", type=float, default=5.0, help="per-side slippage in bps (default 5; 0 = frictionless)")
     args = p.parse_args()
     cands = MEANREV_CANDIDATES if args.strategy == "mean_reversion" else CANDIDATES
+    bps = args.slippage_bps
 
     tickers = [t.strip().upper() for t in args.tickers.split(",")] if args.tickers else None
     ds = build_dataset(args.start, args.end, args.universe, tickers)  # downloaded once, cached
@@ -507,8 +520,8 @@ def main() -> None:
         print("No data downloaded."); return
 
     if args.compare and args.split:
-        rows = compare_oos(ds, args.split, cands, args.capital, args.strategy)
-        print(f"\n=== Train/Test @ {args.split} | {args.strategy} | {ds['names']} names | {args.start} -> {args.end} ===")
+        rows = compare_oos(ds, args.split, cands, args.capital, args.strategy, bps)
+        print(f"\n=== Train/Test @ {args.split} | {args.strategy} | {ds['names']} names | {bps}bps slippage | {args.start} -> {args.end} ===")
         print(f"{'variation':<27}{'trN':>6}{'trainExpR':>10}{'teN':>6}{'testExpR':>10}{'testPF':>8}")
         for name, tr, te in rows:
             trx = f"{tr['expectancy_r']:+.3f}" if tr.get("trades") else "—"
@@ -530,8 +543,8 @@ def main() -> None:
         return
 
     if args.compare:
-        rows = compare(ds, cands, args.capital, args.strategy)
-        print(f"\n=== Variation sweep | {args.strategy} | {args.start} -> {args.end} | {ds['names']} names ===")
+        rows = compare(ds, cands, args.capital, args.strategy, bps)
+        print(f"\n=== Variation sweep | {args.strategy} | {ds['names']} names | {bps}bps slippage | {args.start} -> {args.end} ===")
         print(f"{'variation':<27}{'trades':>7}{'win%':>7}{'expR':>8}{'PF':>6}{'maxDD':>7}{'totR':>8}")
         for name, s in rows:
             if not s.get("trades"):
@@ -559,7 +572,7 @@ def main() -> None:
     except Exception:
         pass
     settings = ScanSettings(capital=args.capital, **params)
-    res = run_on_dataset(ds, settings, args.max_hold, args.strategy)
+    res = run_on_dataset(ds, settings, args.max_hold, args.strategy, bps)
     s = res["stats"]
     print(f"\n=== Backtest {args.start} -> {args.end} | {ds['names']} names | max-hold {args.max_hold}d ===")
     if not s.get("trades"):
