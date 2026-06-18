@@ -18,6 +18,7 @@ paper_account.json (gitignored); closed trades live in the journal for the score
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 
 from . import journal
@@ -28,6 +29,8 @@ log = logging.getLogger(__name__)
 
 ACCOUNT_PATH = Path(__file__).resolve().parents[1] / "paper_account.json"
 TICK_SECONDS = 5  # how often the bracket monitor re-marks open positions
+
+_regime_cache: tuple[float, str] | None = None  # (fetched_at, label), refreshed ~hourly
 
 
 def _load() -> dict:
@@ -81,7 +84,13 @@ def buy(stock: dict) -> dict:
     # Fill the entry at the live price; the trade's stop/target are the planned levels.
     sized = dict(stock)
     sized["plan"] = {**plan, "entry": round(fill, 2)}
-    trade = journal.log_trade(sized, journal_variation(), decision=(stock.get("trade_case") or {}).get("recommendation"))
+    vid, vparams = _active_variation()
+    trade = journal.log_trade(
+        sized, vid,
+        variation_params=vparams,
+        decision=(stock.get("trade_case") or {}).get("recommendation"),
+        market_regime=_market_regime(),
+    )
 
     acct["cash"] = round(acct["cash"] - cost, 2)
     acct["positions"][trade["id"]] = {
@@ -192,14 +201,34 @@ def account() -> dict:
     }
 
 
-def journal_variation() -> str:
-    """Tag paper trades with the active strategy variation (seed one if needed)."""
+def _active_variation() -> tuple[str, dict | None]:
+    """The active strategy variation's id + param snapshot (seed one if needed), so each paper
+    trade records the exact strategy knobs it ran under."""
     try:
         from . import strategy
 
-        active = strategy.active_id()
-        if active:
-            return active
-        return strategy.ensure_seeded(ScanSettings())["id"]
+        v = strategy.get_active() or strategy.ensure_seeded(ScanSettings())
+        return v["id"], v.get("params")
     except Exception:
-        return "v1"
+        return "v1", None
+
+
+def _market_regime() -> str | None:
+    """Broad-market regime label from SPY (uptrend / downtrend / choppy), cached ~1h. Stored on
+    each trade so outcomes can later be sliced by the regime they were taken in."""
+    global _regime_cache
+    if _regime_cache and time.time() - _regime_cache[0] < 3600:
+        return _regime_cache[1]
+    try:
+        import yfinance as yf
+
+        close = yf.Ticker("SPY").history(period="1y")["Close"]
+        sma200 = close.rolling(200).mean()
+        c, s = float(close.iloc[-1]), float(sma200.iloc[-1])
+        rising = sma200.iloc[-1] > sma200.iloc[-22]
+        label = "uptrend" if (c > s and rising) else "downtrend" if (c < s and not rising) else "choppy"
+        _regime_cache = (time.time(), label)
+        return label
+    except Exception:
+        log.exception("market regime fetch failed")
+        return None

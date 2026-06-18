@@ -16,6 +16,7 @@ import {
   paperBuy,
   paperClose,
   paperReset,
+  getJournal,
 } from "./api.js";
 import StockCard from "./components/StockCard.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
@@ -39,6 +40,28 @@ function formatClock(epochSeconds) {
 // ThinkorSwim uses a dot for class shares (BRK.B); we store Yahoo's dash (BRK-B).
 function tosSymbols(results) {
   return results.map((r) => r.ticker.replace(/-/g, "."));
+}
+
+// Client-side CSV export of the journal — portable, hand back to Claude for analysis.
+function exportJournalCsv(trades) {
+  if (!trades?.length) return;
+  const cols = [
+    "ticker", "variation_id", "decision", "status", "opened_at", "entry", "stop", "target",
+    "shares", "closed_at", "exit", "exit_reason", "hold_days", "pnl", "r_multiple", "outcome",
+    "market_regime", "notes",
+  ];
+  const esc = (v) => {
+    const s = v == null ? "" : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const rows = [cols.join(","), ...trades.map((t) => cols.map((c) => esc(t[c])).join(","))];
+  const blob = new Blob([rows.join("\n") + "\n"], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "journal.csv";
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // Dollar formatter for the paper book (always 2 decimals, thousands separators).
@@ -77,6 +100,8 @@ export default function App() {
   const [paper, setPaper] = useState(null); // paper account snapshot (cash/equity/positions)
   const [showPaper, setShowPaper] = useState(true); // paper book open by default
   const [recommending, setRecommending] = useState(false); // batch-triage in flight
+  const [journal, setJournal] = useState(null); // {trades, summary} for the journal view
+  const [showJournal, setShowJournal] = useState(false);
   const [liveOn, setLiveOn] = useState(true); // streaming live prices for displayed cards (on by default)
   const [livePrices, setLivePrices] = useState({}); // ticker -> {price, change_percent}
   const pollRef = useRef(null);
@@ -261,6 +286,21 @@ export default function App() {
       /* ignore */
     }
   };
+  const refreshJournal = async () => {
+    try {
+      setJournal(await getJournal());
+    } catch {
+      /* ignore */
+    }
+  };
+  // Load the journal when its panel opens, and refresh it periodically while open
+  // (trades land in it as brackets/closes fire).
+  useEffect(() => {
+    if (!showJournal) return;
+    refreshJournal();
+    const id = setInterval(refreshJournal, 10000);
+    return () => clearInterval(id);
+  }, [showJournal]);
   const onPaperBuy = async (ticker) => {
     try {
       const a = await paperBuy(ticker);
@@ -273,6 +313,7 @@ export default function App() {
   const onPaperClose = async (tradeId) => {
     try {
       setPaper(await paperClose(tradeId));
+      if (showJournal) refreshJournal();
     } catch (e) {
       setError(e.message);
     }
@@ -447,6 +488,13 @@ export default function App() {
               📈 Paper book{paper.positions?.length ? ` (${paper.positions.length})` : ""}
             </button>
           )}
+          <button
+            className={`btn ghost ${showJournal ? "active" : ""}`}
+            onClick={() => setShowJournal((v) => !v)}
+            title="Trade journal: closed trades + the per-variation scoreboard (winrate/expectancy)"
+          >
+            📓 Journal
+          </button>
           <button className="btn ghost" onClick={() => setShowSettings(true)}>
             Settings
           </button>
@@ -629,6 +677,76 @@ export default function App() {
               </tbody>
             </table>
           )}
+        </div>
+      )}
+
+      {showJournal && journal && (
+        <div className="paper-panel">
+          <div className="paper-summary">
+            <strong>Trade journal</strong>
+            <span className="muted">{journal.trades.length} logged</span>
+            <button
+              className="btn export ghost paper-reset"
+              onClick={() => exportJournalCsv(journal.trades)}
+              title="Download the full journal as CSV"
+            >
+              Export CSV
+            </button>
+          </div>
+
+          {Object.keys(journal.summary).length > 0 && (
+            <table className="paper-table">
+              <thead>
+                <tr><th>Variation</th><th>Trades</th><th>Win%</th><th>Expectancy</th><th>Net P&amp;L</th></tr>
+              </thead>
+              <tbody>
+                {Object.entries(journal.summary).map(([vid, s]) => (
+                  <tr key={vid}>
+                    <td className="pt-ticker">{vid}{s.low_sample ? " ⚠" : ""}</td>
+                    <td>{s.trades}</td>
+                    <td>{s.winrate}%</td>
+                    <td className={s.expectancy_r >= 0 ? "pos" : "neg"}>{s.expectancy_r >= 0 ? "+" : ""}{s.expectancy_r}R</td>
+                    <td className={s.total_pnl >= 0 ? "pos" : "neg"}>{s.total_pnl >= 0 ? "+" : "−"}${usd(Math.abs(s.total_pnl))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {(() => {
+            const closed = journal.trades.filter((t) => t.status === "closed");
+            return closed.length === 0 ? (
+              <p className="muted small" style={{ marginTop: "10px" }}>
+                No closed trades yet. They appear here when a paper position closes (bracket or manual),
+                with the per-variation scoreboard above.
+              </p>
+            ) : (
+              <table className="paper-table" style={{ marginTop: "10px" }}>
+                <thead>
+                  <tr>
+                    <th>Ticker</th><th>Var</th><th>Entry→Exit</th><th>R</th>
+                    <th>Outcome</th><th>Why</th><th>Days</th><th>Regime</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {closed.slice().reverse().map((t) => (
+                    <tr key={t.id}>
+                      <td className="pt-ticker">{t.ticker}</td>
+                      <td>{t.variation_id}</td>
+                      <td>${usd(t.entry)} → ${usd(t.exit)}</td>
+                      <td className={(t.r_multiple ?? 0) >= 0 ? "pos" : "neg"}>
+                        {t.r_multiple == null ? "—" : `${t.r_multiple >= 0 ? "+" : ""}${t.r_multiple}R`}
+                      </td>
+                      <td className={t.outcome === "win" ? "pos" : t.outcome === "loss" ? "neg" : ""}>{t.outcome}</td>
+                      <td>{t.exit_reason}</td>
+                      <td>{t.hold_days}</td>
+                      <td className="muted">{t.market_regime || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            );
+          })()}
         </div>
       )}
 

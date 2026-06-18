@@ -18,6 +18,7 @@ from .ai import analyze_all, analyze_single
 from .config import ScanSettings, load_settings, save_settings
 from . import price_cache
 from . import paper
+from . import journal
 from .live import live
 from .scanner import refresh_results, scan_market
 from .trade_case import trade_case
@@ -253,6 +254,12 @@ class PaperCloseRequest(BaseModel):
 
 class PaperResetRequest(BaseModel):
     capital: float | None = None
+
+
+@app.get("/api/journal")
+async def journal_view() -> dict:
+    """All logged trades + the per-variation scoreboard (winrate/expectancy)."""
+    return {"trades": journal.list_trades(), "summary": journal.summary_by_variation()}
 
 
 @app.get("/api/paper/account")
