@@ -89,22 +89,59 @@ def _download(tickers: list[str], start: str, end: str) -> dict[str, pd.DataFram
     return out
 
 
+_SPY_CACHE: dict[tuple[str, str], pd.Series | None] = {}
+
+
+def _spy_close(start: str, end: str) -> pd.Series | None:
+    """SPY daily close over the window (memoized per run so the regime helpers share one
+    download). None if SPY can't be fetched."""
+    key = (start, end)
+    if key not in _SPY_CACHE:
+        try:
+            spy = yf.download("SPY", start=start, end=end, interval="1d", auto_adjust=True, progress=False)
+            close = spy["Close"]
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            _SPY_CACHE[key] = close
+        except Exception:
+            log.exception("SPY download for the regime classifier failed")
+            _SPY_CACHE[key] = None
+    return _SPY_CACHE[key]
+
+
 def _market_up_series(start: str, end: str) -> pd.Series | None:
-    """Boolean series: is the broad market (SPY) in an uptrend (close > its 200-SMA) on each
-    day? Used as an as-of regime gate. None if SPY can't be fetched (filter then no-ops)."""
-    try:
-        spy = yf.download("SPY", start=start, end=end, interval="1d", auto_adjust=True, progress=False)
-        close = spy["Close"]
-        if isinstance(close, pd.DataFrame):
-            close = close.iloc[:, 0]
-        sma200 = close.rolling(200).mean()
-        # Bull regime = price above the 200-SMA AND the 200-SMA rising (over ~1mo). The
-        # "rising" condition is what excludes bear-market bounces (falling 200-SMA), which a
-        # plain price>200SMA gate lets through as bull traps.
-        return (close > sma200) & (sma200 > sma200.shift(21))
-    except Exception:
-        log.exception("SPY download for the regime filter failed")
+    """Boolean series: is the broad market (SPY) in an uptrend (close > its 200-SMA AND the
+    200-SMA rising) on each day? Used as an as-of regime gate. None if SPY can't be fetched."""
+    close = _spy_close(start, end)
+    if close is None:
         return None
+    sma200 = close.rolling(200).mean()
+    # Bull regime = price above the 200-SMA AND the 200-SMA rising (over ~1mo). The "rising"
+    # condition excludes bear-market bounces (falling 200-SMA) a plain price>200SMA gate lets
+    # through as bull traps.
+    return (close > sma200) & (sma200 > sma200.shift(21))
+
+
+def _regime_series(start: str, end: str) -> pd.Series | None:
+    """Classify each day's MARKET regime from SPY (as-of correct), into one of three states the
+    router maps to strategies:
+      * "bull"  — SPY above a RISING 200-SMA            -> trend-following (leader-pullback)
+      * "bear"  — SPY below a FALLING 200-SMA           -> CASH (no dip-buying, no momentum)
+      * "chop"  — anything in between (range / transition) -> mean-reversion
+    The two signals (location vs the 200-SMA, slope of the 200-SMA) are exactly the leader-pullback
+    bull definition split into a 3-way taxonomy. Warmup days (no 200-SMA yet) are treated as bear
+    (= cash), so the router never trades on an unclassifiable day. None if SPY can't be fetched."""
+    close = _spy_close(start, end)
+    if close is None:
+        return None
+    sma200 = close.rolling(200).mean()
+    above = close > sma200
+    rising = sma200 > sma200.shift(21)
+    regime = pd.Series("chop", index=close.index)
+    regime[above & rising] = "bull"
+    regime[(~above) & (~rising)] = "bear"
+    regime[sma200.isna()] = "bear"  # warmup -> cash (unclassifiable)
+    return regime
 
 
 # ----------------------------------------------------------------- as-of indicator frames
@@ -301,9 +338,12 @@ def _trades_for(
     ticker: str, ind: pd.DataFrame, rs: pd.Series, s: ScanSettings, max_hold: int,
     market_up: pd.Series | None = None, breadth: pd.Series | None = None,
     strategy: str = "leader_pullback", slippage_bps: float = 0.0,
+    regime_gate: pd.Series | None = None,
 ) -> list[Trade]:
     """All non-overlapping trades for one ticker: take each signal, but don't re-enter the
-    same name while a position in it is still open. Dispatches on `strategy`."""
+    same name while a position in it is still open. Dispatches on `strategy`. `regime_gate`
+    (a boolean date series) is the router's market-regime admission filter — a signal is only
+    taken on a day the gate is True (the exit still walks freely into other regimes)."""
     if strategy == "mean_reversion":
         sig = _signal_mask_meanrev(ind, s)
         simulate = _simulate_meanrev
@@ -314,6 +354,8 @@ def _trades_for(
         if s.min_breadth_pct > 0 and breadth is not None:
             sig = sig & (breadth.reindex(ind.index) >= s.min_breadth_pct).fillna(False)
         simulate = _simulate
+    if regime_gate is not None:
+        sig = sig & regime_gate.reindex(ind.index).fillna(False)
 
     trades: list[Trade] = []
     in_until_loc = -1
@@ -403,8 +445,9 @@ def build_dataset(start: str, end: str, universe: str = "curated", tickers: list
     rs = _rs_table(frames) if frames else pd.DataFrame()
     market_up = _market_up_series(start, end)
     breadth = _breadth_series(frames) if frames else None
+    regime = _regime_series(start, end)
     return {"frames": frames, "rs": rs, "market_up": market_up, "breadth": breadth,
-            "start": start, "end": end, "names": len(frames)}
+            "regime": regime, "start": start, "end": end, "names": len(frames)}
 
 
 def run_on_dataset(ds: dict, settings: ScanSettings, max_hold: int = DEFAULT_MAX_HOLD,
@@ -511,6 +554,58 @@ def compare_oos(ds: dict, split: str, candidates=CANDIDATES, capital: float = DE
     return rows
 
 
+# ----------------------------------------------------------------- regime router
+
+# The routing policy: which strategy (+ its best known variation) trades in each market regime.
+# "cash" = sit out. This is the first attempt to turn two bull/normal-regime edges into an
+# all-weather system: trend-follow when SPY trends, mean-revert in the chop, hold cash in a
+# confirmed downtrend (where BOTH strategies bled in backtests — momentum has nothing to ride
+# and dip-buying catches knives). Tweak the variations here; the regime taxonomy is in
+# _regime_series. Bull -> the cost-robust uncapped/ADX leader-pullback; chop -> the selective
+# (deep-dip) mean-reversion that survives costs; bear -> cash.
+DEFAULT_ROUTER = {
+    "bull": ("leader_pullback", {"reward_mult": 3.0, "cap_target_at_high": False, "adx_min": 30.0}),
+    "chop": ("mean_reversion", {"atr_stop_mult": 2.5, "mr_min_stretch_pct": 4.0}),
+    "bear": ("cash", {}),
+}
+
+
+def run_router(ds: dict, policy: dict = DEFAULT_ROUTER, capital: float = DEFAULT_CAPITAL,
+               max_hold: int = DEFAULT_MAX_HOLD, slippage_bps: float = 0.0) -> dict:
+    """Replay the regime router: each day, only the strategy assigned to that day's regime may
+    OPEN a trade (cash regimes open nothing). Returns the blended trade list + per-regime legs."""
+    regime = ds.get("regime")
+    legs: dict[str, dict] = {}
+    combined: list[Trade] = []
+    if regime is not None:
+        for reg, (strat, ov) in policy.items():
+            if strat == "cash":
+                continue
+            s = ScanSettings(capital=capital, **ov)
+            gate = (regime == reg)
+            leg: list[Trade] = []
+            for t, ind in ds["frames"].items():
+                leg.extend(_trades_for(t, ind, ds["rs"][t], s, max_hold,
+                                       ds.get("market_up"), ds.get("breadth"), strat, slippage_bps,
+                                       regime_gate=gate))
+            legs[reg] = {"strategy": strat, "stats": _stats(leg)}
+            combined.extend(leg)
+    combined.sort(key=lambda x: x.entry_date)
+    return {"stats": _stats(combined), "trades": combined, "legs": legs}
+
+
+def _regime_day_counts(regime: pd.Series | None, start: str, split: str | None = None) -> dict:
+    """How the trading days split across regimes (overall, and train/test if a split is given)."""
+    if regime is None:
+        return {}
+    r = regime[regime.index >= pd.Timestamp(start)]
+    out = {"all": r.value_counts().to_dict()}
+    if split:
+        out["train"] = r[r.index < pd.Timestamp(split)].value_counts().to_dict()
+        out["test"] = r[r.index >= pd.Timestamp(split)].value_counts().to_dict()
+    return out
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     p = argparse.ArgumentParser(description="Backtest the leader-pullback strategy.")
@@ -526,6 +621,7 @@ def main() -> None:
     p.add_argument("--csv", default=None, help="write trades to this CSV path (single-variation run)")
     p.add_argument("--strategy", default="leader_pullback", choices=["leader_pullback", "mean_reversion"])
     p.add_argument("--slippage-bps", type=float, default=5.0, help="per-side slippage in bps (default 5; 0 = frictionless)")
+    p.add_argument("--router", action="store_true", help="run the regime router (bull->leader, chop->meanrev, bear->cash)")
     args = p.parse_args()
     cands = MEANREV_CANDIDATES if args.strategy == "mean_reversion" else CANDIDATES
     bps = args.slippage_bps
@@ -534,6 +630,73 @@ def main() -> None:
     ds = build_dataset(args.start, args.end, args.universe, tickers)  # downloaded once, cached
     if not ds["frames"]:
         print("No data downloaded."); return
+
+    if args.router:
+        if ds.get("regime") is None:
+            print("Regime classifier unavailable (SPY download failed)."); return
+
+        def _line(label, st):
+            if not st.get("trades"):
+                return f"{label:<34}{'0':>6}"
+            return (f"{label:<34}{st['trades']:>6}{st['win_rate']:>7}{st['expectancy_r']:>+9.3f}"
+                    f"{st['profit_factor']:>7}{st['total_r']:>+9.1f}")
+
+        counts = _regime_day_counts(ds["regime"], args.start, args.split)
+        router = run_router(ds, DEFAULT_ROUTER, args.capital, args.max_hold, bps)
+        # Standalone baselines (no regime gate) over the same window, for contrast.
+        leader = run_on_dataset(ds, ScanSettings(capital=args.capital, **DEFAULT_ROUTER["bull"][1]),
+                                args.max_hold, "leader_pullback", bps)
+        meanrev = run_on_dataset(ds, ScanSettings(capital=args.capital, **DEFAULT_ROUTER["chop"][1]),
+                                 args.max_hold, "mean_reversion", bps)
+
+        print(f"\n=== Regime router | {ds['names']} names | {bps}bps slippage | {args.start} -> {args.end} ===")
+        print(f"Policy: bull->leader_pullback  chop->mean_reversion  bear->CASH")
+        print(f"Regime days: {counts.get('all', {})}")
+        print(f"\n{'':<34}{'trades':>6}{'win%':>7}{'expR':>9}{'PF':>7}{'totR':>9}")
+        print(_line("ROUTER (blended)", router["stats"]))
+        for reg in ("bull", "chop", "bear"):
+            if reg in router["legs"]:
+                lg = router["legs"][reg]
+                print(_line(f"  └ {reg} leg ({lg['strategy']})", lg["stats"]))
+        print(_line("leader_pullback ALONE (all regimes)", leader["stats"]))
+        print(_line("mean_reversion ALONE (all regimes)", meanrev["stats"]))
+
+        if args.split:
+            print(f"\n--- Out-of-sample @ {args.split} (train < split, test >=) ---")
+            print(f"Train regime days: {counts.get('train', {})}")
+            print(f"Test  regime days: {counts.get('test', {})}")
+            print(f"\n{'':<34}{'trN':>6}{'trainExpR':>10}{'teN':>6}{'testExpR':>10}{'testPF':>8}")
+
+            def _oos_line(label, trades):
+                tr, te = _split_stats(trades, args.split)
+                trx = f"{tr['expectancy_r']:+.3f}" if tr.get("trades") else "—"
+                tex = f"{te['expectancy_r']:+.3f}" if te.get("trades") else "—"
+                tepf = te.get("profit_factor", "—") if te.get("trades") else "—"
+                print(f"{label:<34}{tr.get('trades', 0):>6}{trx:>10}{te.get('trades', 0):>6}{tex:>10}{str(tepf):>8}")
+
+            _oos_line("ROUTER (blended)", router["trades"])
+            _oos_line("leader_pullback ALONE", leader["trades"])
+            _oos_line("mean_reversion ALONE", meanrev["trades"])
+            print("\nThe question: does the router avoid the 2022 bleed that sinks each strategy run 24/7?")
+
+        st = router["stats"]
+        md = ["| leg | trades | win% | expR | PF | totR |", "| --- | --- | --- | --- | --- | --- |"]
+        md.append(f"| ROUTER (blended) | {st.get('trades',0)} | {st.get('win_rate','—')} | "
+                  f"{st.get('expectancy_r','—')} | {st.get('profit_factor','—')} | {st.get('total_r','—')} |")
+        for reg in ("bull", "chop", "bear"):
+            if reg in router["legs"]:
+                s2 = router["legs"][reg]["stats"]
+                md.append(f"| {reg} ({router['legs'][reg]['strategy']}) | {s2.get('trades',0)} | {s2.get('win_rate','—')} | "
+                          f"{s2.get('expectancy_r','—')} | {s2.get('profit_factor','—')} | {s2.get('total_r','—')} |")
+        write_strategy_md(
+            f"Regime router | {ds['names']} names | {bps}bps | {args.start} → {args.end}",
+            "\n".join(md),
+            f"Policy: bull→leader_pullback, chop→mean_reversion, bear→cash. Regime days: {counts.get('all', {})}. "
+            "Survivorship-biased + idealized fills — validate forward in paper.",
+        )
+        print(f"\n(written to {STRATEGY_MD.name})")
+        print("(Hypothesis only — survivorship-biased universe, idealized fills. Validate forward in paper.)")
+        return
 
     if args.compare and args.split:
         rows = compare_oos(ds, args.split, cands, args.capital, args.strategy, bps)
