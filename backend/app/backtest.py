@@ -639,7 +639,7 @@ def main() -> None:
             if not st.get("trades"):
                 return f"{label:<34}{'0':>6}"
             return (f"{label:<34}{st['trades']:>6}{st['win_rate']:>7}{st['expectancy_r']:>+9.3f}"
-                    f"{st['profit_factor']:>7}{st['total_r']:>+9.1f}")
+                    f"{st['profit_factor']:>7}{st['total_r']:>+9.1f}{st['max_drawdown_r']:>8.1f}")
 
         counts = _regime_day_counts(ds["regime"], args.start, args.split)
         router = run_router(ds, DEFAULT_ROUTER, args.capital, args.max_hold, bps)
@@ -652,7 +652,7 @@ def main() -> None:
         print(f"\n=== Regime router | {ds['names']} names | {bps}bps slippage | {args.start} -> {args.end} ===")
         print(f"Policy: bull->leader_pullback  chop->mean_reversion  bear->CASH")
         print(f"Regime days: {counts.get('all', {})}")
-        print(f"\n{'':<34}{'trades':>6}{'win%':>7}{'expR':>9}{'PF':>7}{'totR':>9}")
+        print(f"\n{'':<34}{'trades':>6}{'win%':>7}{'expR':>9}{'PF':>7}{'totR':>9}{'maxDD':>8}")
         print(_line("ROUTER (blended)", router["stats"]))
         for reg in ("bull", "chop", "bear"):
             if reg in router["legs"]:
@@ -665,14 +665,15 @@ def main() -> None:
             print(f"\n--- Out-of-sample @ {args.split} (train < split, test >=) ---")
             print(f"Train regime days: {counts.get('train', {})}")
             print(f"Test  regime days: {counts.get('test', {})}")
-            print(f"\n{'':<34}{'trN':>6}{'trainExpR':>10}{'teN':>6}{'testExpR':>10}{'testPF':>8}")
+            print(f"\n{'':<34}{'trN':>6}{'trainExpR':>10}{'teN':>6}{'testExpR':>10}{'testPF':>8}{'testDD':>8}")
 
             def _oos_line(label, trades):
                 tr, te = _split_stats(trades, args.split)
                 trx = f"{tr['expectancy_r']:+.3f}" if tr.get("trades") else "—"
                 tex = f"{te['expectancy_r']:+.3f}" if te.get("trades") else "—"
                 tepf = te.get("profit_factor", "—") if te.get("trades") else "—"
-                print(f"{label:<34}{tr.get('trades', 0):>6}{trx:>10}{te.get('trades', 0):>6}{tex:>10}{str(tepf):>8}")
+                tedd = f"{te['max_drawdown_r']:.1f}" if te.get("trades") else "—"
+                print(f"{label:<34}{tr.get('trades', 0):>6}{trx:>10}{te.get('trades', 0):>6}{tex:>10}{str(tepf):>8}{tedd:>8}")
 
             _oos_line("ROUTER (blended)", router["trades"])
             _oos_line("leader_pullback ALONE", leader["trades"])
