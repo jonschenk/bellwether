@@ -117,6 +117,8 @@ def _indicator_frame(df: pd.DataFrame) -> pd.DataFrame:
     f = pd.DataFrame(
         {
             "open": df["Open"], "high": high, "low": low, "close": close,
+            "sma5": sma(close, 5),  # mean-reversion: reversion-exit reference
+            "rsi2": rsi(close, 2),  # mean-reversion: fast oversold trigger (Connors-style)
             "sma20": sma(close, 20), "sma50": sma(close, 50), "sma200": sma200,
             "sma200_prior": sma200.shift(22),               # ~1 month ago (200-SMA slope)
             "avgvol": vol.rolling(21).mean(),
@@ -230,24 +232,77 @@ def _simulate(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int) -> Tr
     )
 
 
+# ---- mean-reversion strategy: buy a quality name when it's deeply oversold, exit on the bounce.
+# Genuinely different from leader-pullback: oversold (not healthy) entry, condition-based exit
+# (reversion to the 5-SMA), no RS/52w-high/ADX requirements. Targets the chop where momentum dies.
+
+def _signal_mask_meanrev(ind: pd.DataFrame, s: ScanSettings) -> pd.Series:
+    return (
+        (ind["close"] > s.min_price) & (ind["avgvol"] > s.min_avg_volume)
+        & (ind["close"] > ind["sma200"])   # quality: long-term uptrend (no broken stocks)
+        & (ind["rsi2"] < 10)               # deeply oversold short-term (Connors-style)
+        & (ind["close"] < ind["sma5"])     # stretched below the short MA
+    )
+
+
+def _simulate_meanrev(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int) -> Trade | None:
+    """Enter next open; exit on the reversion (a close back above the 5-SMA), a protective ATR
+    stop, or a time-stop. Exit is condition-based, not a fixed target."""
+    if loc + 1 >= len(ind):
+        return None
+    entry = float(ind["open"].iloc[loc + 1])
+    atrv = float(ind["atr"].iloc[loc])
+    stop = entry - s.atr_stop_mult * atrv
+    if stop <= 0 or entry <= 0:
+        return None
+    exit_price = exit_reason = exit_loc = None
+    last = min(loc + max_hold, len(ind) - 1)
+    for j in range(loc + 1, last + 1):
+        lo, c, m5 = float(ind["low"].iloc[j]), float(ind["close"].iloc[j]), float(ind["sma5"].iloc[j])
+        if lo <= stop:
+            exit_price, exit_reason, exit_loc = stop, "stop", j
+            break
+        if c > m5:  # reverted — the bounce happened
+            exit_price, exit_reason, exit_loc = c, "reversion", j
+            break
+    if exit_price is None:
+        exit_price, exit_reason, exit_loc = float(ind["close"].iloc[last]), "time", last
+    rps = entry - stop
+    r = (exit_price - entry) / rps if rps > 0 else 0.0
+    return Trade(
+        ticker="", signal_date=str(ind.index[loc].date()), entry_date=str(ind.index[loc + 1].date()),
+        entry=round(entry, 2), stop=round(stop, 2), target=round(entry + s.reward_mult * rps, 2),
+        exit_date=str(ind.index[exit_loc].date()), exit=round(exit_price, 2), exit_reason=exit_reason,
+        r_multiple=round(r, 2), hold_days=exit_loc - (loc + 1),
+        outcome="win" if r > 0 else ("loss" if r < 0 else "scratch"),
+    )
+
+
 def _trades_for(
     ticker: str, ind: pd.DataFrame, rs: pd.Series, s: ScanSettings, max_hold: int,
     market_up: pd.Series | None = None, breadth: pd.Series | None = None,
+    strategy: str = "leader_pullback",
 ) -> list[Trade]:
     """All non-overlapping trades for one ticker: take each signal, but don't re-enter the
-    same name while a position in it is still open."""
-    sig = _signal_mask(ind, rs.reindex(ind.index), s)
-    if s.require_market_uptrend and market_up is not None:
-        sig = sig & market_up.reindex(ind.index).fillna(False)
-    if s.min_breadth_pct > 0 and breadth is not None:
-        sig = sig & (breadth.reindex(ind.index) >= s.min_breadth_pct).fillna(False)
+    same name while a position in it is still open. Dispatches on `strategy`."""
+    if strategy == "mean_reversion":
+        sig = _signal_mask_meanrev(ind, s)
+        simulate = _simulate_meanrev
+    else:
+        sig = _signal_mask(ind, rs.reindex(ind.index), s)
+        if s.require_market_uptrend and market_up is not None:
+            sig = sig & market_up.reindex(ind.index).fillna(False)
+        if s.min_breadth_pct > 0 and breadth is not None:
+            sig = sig & (breadth.reindex(ind.index) >= s.min_breadth_pct).fillna(False)
+        simulate = _simulate
+
     trades: list[Trade] = []
     in_until_loc = -1
     locs = [ind.index.get_loc(d) for d in sig.index[sig.fillna(False)]]
     for loc in locs:
         if loc < MIN_BARS or loc <= in_until_loc:
             continue
-        t = _simulate(ind, loc, s, max_hold)
+        t = simulate(ind, loc, s, max_hold)
         if t is None:
             continue
         t.ticker = ticker
@@ -267,7 +322,7 @@ def _stats(trades: list[Trade]) -> dict:
     gross_win = sum(t.r_multiple for t in wins)
     gross_loss = -sum(t.r_multiple for t in losses)
     total_r = sum(t.r_multiple for t in trades)
-    reasons = {r: sum(1 for t in trades if t.exit_reason == r) for r in ("target", "stop", "time")}
+    reasons = {r: sum(1 for t in trades if t.exit_reason == r) for r in ("target", "reversion", "stop", "time")}
 
     # R-multiple equity curve (fixed-risk units, ordered by exit) + peak-to-trough drawdown.
     cum = peak = maxdd = 0.0
@@ -333,12 +388,13 @@ def build_dataset(start: str, end: str, universe: str = "curated", tickers: list
             "start": start, "end": end, "names": len(frames)}
 
 
-def run_on_dataset(ds: dict, settings: ScanSettings, max_hold: int = DEFAULT_MAX_HOLD) -> dict:
+def run_on_dataset(ds: dict, settings: ScanSettings, max_hold: int = DEFAULT_MAX_HOLD,
+                   strategy: str = "leader_pullback") -> dict:
     """Run ONE variation against a prebuilt dataset — the cheap, repeatable part."""
     trades: list[Trade] = []
     market_up, breadth = ds.get("market_up"), ds.get("breadth")
     for t, ind in ds["frames"].items():
-        trades.extend(_trades_for(t, ind, ds["rs"][t], settings, max_hold, market_up, breadth))
+        trades.extend(_trades_for(t, ind, ds["rs"][t], settings, max_hold, market_up, breadth, strategy))
     trades.sort(key=lambda x: x.entry_date)
     return {"stats": _stats(trades), "trades": trades}
 
@@ -387,10 +443,22 @@ CANDIDATES = [
     ("3R uncapped + ADX30 + breadth>=50", {"reward_mult": 3.0, "cap_target_at_high": False, "adx_min": 30.0, "min_breadth_pct": 50.0}, 10),
 ]
 
+# Mean-reversion candidates (RSI(2)<10 oversold entry hardcoded; vary the protective stop +
+# hold). Run with --strategy mean_reversion.
+MEANREV_CANDIDATES = [
+    ("meanrev stop1.5ATR hold10", {"atr_stop_mult": 1.5}, 10),
+    ("meanrev stop2.5ATR hold10", {"atr_stop_mult": 2.5}, 10),
+    ("meanrev stop3ATR hold10", {"atr_stop_mult": 3.0}, 10),
+    ("meanrev stop2.5ATR hold5", {"atr_stop_mult": 2.5}, 5),
+    ("meanrev stop2.5ATR hold15", {"atr_stop_mult": 2.5}, 15),
+    ("meanrev stop3ATR hold5", {"atr_stop_mult": 3.0}, 5),
+]
 
-def compare(ds: dict, candidates=CANDIDATES, capital: float = DEFAULT_CAPITAL) -> list[tuple[str, dict]]:
+
+def compare(ds: dict, candidates=CANDIDATES, capital: float = DEFAULT_CAPITAL,
+            strategy: str = "leader_pullback") -> list[tuple[str, dict]]:
     """Run each candidate variation against the same dataset; return rows sorted by expectancy."""
-    rows = [(name, run_on_dataset(ds, ScanSettings(capital=capital, **ov), mh)["stats"]) for name, ov, mh in candidates]
+    rows = [(name, run_on_dataset(ds, ScanSettings(capital=capital, **ov), mh, strategy)["stats"]) for name, ov, mh in candidates]
     rows.sort(key=lambda r: r[1].get("expectancy_r", -99), reverse=True)
     return rows
 
@@ -403,12 +471,13 @@ def _split_stats(trades: list[Trade], split: str) -> tuple[dict, dict]:
     return _stats(train), _stats(test)
 
 
-def compare_oos(ds: dict, split: str, candidates=CANDIDATES, capital: float = DEFAULT_CAPITAL) -> list:
+def compare_oos(ds: dict, split: str, candidates=CANDIDATES, capital: float = DEFAULT_CAPITAL,
+                strategy: str = "leader_pullback") -> list:
     """Out-of-sample comparison: each variation's train vs test expectancy. Sorted by TEST
     expectancy — that's the number that matters (does the edge hold on unseen data?)."""
     rows = []
     for name, ov, mh in candidates:
-        trades = run_on_dataset(ds, ScanSettings(capital=capital, **ov), mh)["trades"]
+        trades = run_on_dataset(ds, ScanSettings(capital=capital, **ov), mh, strategy)["trades"]
         tr, te = _split_stats(trades, split)
         rows.append((name, tr, te))
     rows.sort(key=lambda r: r[2].get("expectancy_r", -99), reverse=True)
@@ -428,7 +497,9 @@ def main() -> None:
     p.add_argument("--compare", action="store_true", help="sweep the built-in candidate variations")
     p.add_argument("--split", default=None, help="YYYY-MM-DD: out-of-sample split (train < split, test >=)")
     p.add_argument("--csv", default=None, help="write trades to this CSV path (single-variation run)")
+    p.add_argument("--strategy", default="leader_pullback", choices=["leader_pullback", "mean_reversion"])
     args = p.parse_args()
+    cands = MEANREV_CANDIDATES if args.strategy == "mean_reversion" else CANDIDATES
 
     tickers = [t.strip().upper() for t in args.tickers.split(",")] if args.tickers else None
     ds = build_dataset(args.start, args.end, args.universe, tickers)  # downloaded once, cached
@@ -436,8 +507,8 @@ def main() -> None:
         print("No data downloaded."); return
 
     if args.compare and args.split:
-        rows = compare_oos(ds, args.split, capital=args.capital)
-        print(f"\n=== Train/Test @ {args.split} | {ds['names']} names | {args.start} -> {args.end} ===")
+        rows = compare_oos(ds, args.split, cands, args.capital, args.strategy)
+        print(f"\n=== Train/Test @ {args.split} | {args.strategy} | {ds['names']} names | {args.start} -> {args.end} ===")
         print(f"{'variation':<27}{'trN':>6}{'trainExpR':>10}{'teN':>6}{'testExpR':>10}{'testPF':>8}")
         for name, tr, te in rows:
             trx = f"{tr['expectancy_r']:+.3f}" if tr.get("trades") else "—"
@@ -459,8 +530,8 @@ def main() -> None:
         return
 
     if args.compare:
-        rows = compare(ds, capital=args.capital)
-        print(f"\n=== Variation sweep | {args.start} -> {args.end} | {ds['names']} names ===")
+        rows = compare(ds, cands, args.capital, args.strategy)
+        print(f"\n=== Variation sweep | {args.strategy} | {args.start} -> {args.end} | {ds['names']} names ===")
         print(f"{'variation':<27}{'trades':>7}{'win%':>7}{'expR':>8}{'PF':>6}{'maxDD':>7}{'totR':>8}")
         for name, s in rows:
             if not s.get("trades"):
@@ -488,7 +559,7 @@ def main() -> None:
     except Exception:
         pass
     settings = ScanSettings(capital=args.capital, **params)
-    res = run_on_dataset(ds, settings, args.max_hold)
+    res = run_on_dataset(ds, settings, args.max_hold, args.strategy)
     s = res["stats"]
     print(f"\n=== Backtest {args.start} -> {args.end} | {ds['names']} names | max-hold {args.max_hold}d ===")
     if not s.get("trades"):
@@ -499,7 +570,7 @@ def main() -> None:
     print(f"Profit factor: {s['profit_factor']}")
     print(f"Total:         {s['total_r']:+}R   max drawdown: {s['max_drawdown_r']}R")
     print(f"Avg win/loss:  {s['avg_win_r']:+}R / {s['avg_loss_r']:+}R   avg hold {s['avg_hold_days']}d")
-    print(f"Exits:         target {s['exits']['target']} | stop {s['exits']['stop']} | time {s['exits']['time']}")
+    print(f"Exits:         target {s['exits']['target']} | reversion {s['exits']['reversion']} | stop {s['exits']['stop']} | time {s['exits']['time']}")
     if args.csv:
         export_trades_csv(res["trades"], args.csv)
         print(f"(wrote {len(res['trades'])} trades to {args.csv})")
