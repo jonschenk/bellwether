@@ -139,6 +139,15 @@ def _rs_table(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return mom.rank(axis=1, pct=True) * 100
 
 
+def _breadth_series(frames: dict[str, pd.DataFrame]) -> pd.Series:
+    """Market-internals breadth per date: % of the universe trading above its OWN 200-SMA
+    (among names with a valid 200-SMA). As-of correct. This is what catches a stealth rotation
+    — breadth decays as leaders roll over, even while the index holds up."""
+    above = pd.DataFrame({t: (f["close"] > f["sma200"]) for t, f in frames.items()})
+    valid = pd.DataFrame({t: f["sma200"].notna() for t, f in frames.items()})
+    return (above.sum(axis=1) / valid.sum(axis=1).replace(0, pd.NA)) * 100
+
+
 # ----------------------------------------------------------------- signals + simulation
 
 @dataclass
@@ -223,13 +232,15 @@ def _simulate(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int) -> Tr
 
 def _trades_for(
     ticker: str, ind: pd.DataFrame, rs: pd.Series, s: ScanSettings, max_hold: int,
-    market_up: pd.Series | None = None,
+    market_up: pd.Series | None = None, breadth: pd.Series | None = None,
 ) -> list[Trade]:
     """All non-overlapping trades for one ticker: take each signal, but don't re-enter the
     same name while a position in it is still open."""
     sig = _signal_mask(ind, rs.reindex(ind.index), s)
     if s.require_market_uptrend and market_up is not None:
         sig = sig & market_up.reindex(ind.index).fillna(False)
+    if s.min_breadth_pct > 0 and breadth is not None:
+        sig = sig & (breadth.reindex(ind.index) >= s.min_breadth_pct).fillna(False)
     trades: list[Trade] = []
     in_until_loc = -1
     locs = [ind.index.get_loc(d) for d in sig.index[sig.fillna(False)]]
@@ -317,15 +328,17 @@ def build_dataset(start: str, end: str, universe: str = "curated", tickers: list
     frames = {t: _indicator_frame(df) for t, df in frames_raw.items()}
     rs = _rs_table(frames) if frames else pd.DataFrame()
     market_up = _market_up_series(start, end)
-    return {"frames": frames, "rs": rs, "market_up": market_up, "start": start, "end": end, "names": len(frames)}
+    breadth = _breadth_series(frames) if frames else None
+    return {"frames": frames, "rs": rs, "market_up": market_up, "breadth": breadth,
+            "start": start, "end": end, "names": len(frames)}
 
 
 def run_on_dataset(ds: dict, settings: ScanSettings, max_hold: int = DEFAULT_MAX_HOLD) -> dict:
     """Run ONE variation against a prebuilt dataset — the cheap, repeatable part."""
     trades: list[Trade] = []
-    market_up = ds.get("market_up")
+    market_up, breadth = ds.get("market_up"), ds.get("breadth")
     for t, ind in ds["frames"].items():
-        trades.extend(_trades_for(t, ind, ds["rs"][t], settings, max_hold, market_up))
+        trades.extend(_trades_for(t, ind, ds["rs"][t], settings, max_hold, market_up, breadth))
     trades.sort(key=lambda x: x.entry_date)
     return {"stats": _stats(trades), "trades": trades}
 
@@ -366,6 +379,12 @@ CANDIDATES = [
     ("baseline + mkt-up", {"require_market_uptrend": True}, 10),
     ("2R uncapped + mkt-up", {"cap_target_at_high": False, "require_market_uptrend": True}, 10),
     ("3R uncapped + ADX30 + mkt-up", {"reward_mult": 3.0, "cap_target_at_high": False, "adx_min": 30.0, "require_market_uptrend": True}, 10),
+    # breadth-gated: only enter when >= X% of the universe is above its own 200-SMA (catches the
+    # 2021 stealth rotation an index gate misses). The "other strategy" to test.
+    ("baseline + breadth>=50", {"min_breadth_pct": 50.0}, 10),
+    ("2R uncapped + breadth>=50", {"cap_target_at_high": False, "min_breadth_pct": 50.0}, 10),
+    ("2R uncapped + breadth>=60", {"cap_target_at_high": False, "min_breadth_pct": 60.0}, 10),
+    ("3R uncapped + ADX30 + breadth>=50", {"reward_mult": 3.0, "cap_target_at_high": False, "adx_min": 30.0, "min_breadth_pct": 50.0}, 10),
 ]
 
 

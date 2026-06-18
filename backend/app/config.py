@@ -23,6 +23,7 @@ class ScanSettings(BaseModel):
     reward_mult: float = Field(default=2.0, gt=0)  # target = entry + mult * stop distance
     cap_target_at_high: bool = Field(default=True)  # cap the target at the 52w high (off = pure R:R)
     require_market_uptrend: bool = Field(default=False)  # only enter when SPY > its 200-SMA (regime filter; backtest)
+    min_breadth_pct: float = Field(default=0.0, ge=0, le=100)  # only enter when >= this % of the universe is above its 200-SMA (0 = off; backtest)
 
     # --- liquidity / price ---
     min_price: float = Field(default=15.0, ge=0)
