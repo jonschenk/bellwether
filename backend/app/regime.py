@@ -12,6 +12,7 @@ only — it tells you what the validated router WOULD be doing right now; it nev
 """
 
 import logging
+import math
 import time
 
 import pandas as pd
@@ -55,12 +56,17 @@ def _compute() -> dict | None:
         close = spy["Close"]
         if isinstance(close, pd.DataFrame):
             close = close.iloc[:, 0]
+        close = close.dropna()  # drop trailing/empty NaN bars (e.g. today's bar before it prints)
         if len(close) < 220:
             return None
         sma200 = close.rolling(200).mean()
         last = float(close.iloc[-1])
         sma_now = float(sma200.iloc[-1])
         sma_prior = float(sma200.iloc[-22])  # ~1 month ago (same 21-bar slope as the backtester)
+        # A NaN anywhere here means a bad/partial fetch — report UNAVAILABLE, never a false "bear"
+        # (which would wrongly tell the user / the alert engine to hold cash).
+        if not all(math.isfinite(x) for x in (last, sma_now, sma_prior)):
+            return None
         above = last > sma_now
         rising = sma_now > sma_prior
         if above and rising:
