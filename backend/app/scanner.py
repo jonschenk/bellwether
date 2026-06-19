@@ -20,6 +20,7 @@ from typing import Callable, Optional
 import pandas as pd
 import yfinance as yf
 
+from . import earnings
 from . import price_cache
 from .config import ScanSettings
 from .indicators import adx, atr, rsi, sma
@@ -306,9 +307,24 @@ def scan_market(
     results = _evaluate(frames_all, settings, progress, strategy)
     if results:
         names = company_names()
+        # Earnings lookup runs ONLY on the survivors (a few cheap, cached calls), never the universe.
+        de = {}
+        if settings.avoid_earnings_within_days > 0:
+            progress("Checking upcoming earnings for the matched setups…")
+            de = earnings.days_to_earnings([r["ticker"] for r in results])
         for r in results:
             r["name"] = names.get(r["ticker"], "")
+            _attach_earnings(r, de.get(r["ticker"]), settings)
     return results
+
+
+def _attach_earnings(row: dict, days: int | None, settings: ScanSettings) -> None:
+    """Tag a result row with days-to-earnings + a 'soon' flag (within the avoid window)."""
+    row["days_to_earnings"] = days
+    row["earnings_soon"] = (
+        days is not None and 0 <= days <= settings.avoid_earnings_within_days
+        if settings.avoid_earnings_within_days > 0 else False
+    )
 
 
 def _quote_passes(pv: tuple | None) -> bool:
@@ -475,6 +491,8 @@ def refresh_results(
             else:
                 row["ai"] = prior.get("ai")  # preserve the AI analysis from the scan
                 row["name"] = prior.get("name", "")  # preserve the company name
+                row["days_to_earnings"] = prior.get("days_to_earnings")  # preserve earnings (not re-fetched on refresh)
+                row["earnings_soon"] = prior.get("earnings_soon", False)
                 if prior.get("ai_status"):  # preserve on-demand "idle" flag
                     row["ai_status"] = prior["ai_status"]
                 if prior.get("trade_case"):  # preserve an on-demand deep analysis

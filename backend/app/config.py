@@ -34,6 +34,12 @@ class ScanSettings(BaseModel):
     min_price: float = Field(default=15.0, ge=0)
     min_avg_volume: int = Field(default=500_000, ge=0)
 
+    # --- earnings risk ---
+    # Flag a setup whose next earnings report falls within this many days (a binary gap the ATR
+    # stop can't cover). 0 = don't check earnings. Flagged setups are surfaced with a warning and
+    # skipped by the auto-trade gate; the manual scan still shows them (your call).
+    avoid_earnings_within_days: int = Field(default=5, ge=0, le=60)
+
     # --- trend strength ---
     adx_min: float = Field(default=25.0, ge=0)  # ADX trend-strength floor (25 = trending)
 

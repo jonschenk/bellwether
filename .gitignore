@@ -45,3 +45,4 @@ backend/paper_account.json
 backend/.backtest_cache/
 proposals.json
 alert_engine.json
+earnings_cache.json

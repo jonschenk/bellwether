@@ -279,6 +279,27 @@ body {
   border-color: rgba(250, 204, 21, 0.35);
 }
 
+/* ---------- earnings warning ---------- */
+.earnings-warn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--yellow);
+  background: rgba(250, 204, 21, 0.08);
+  border: 1px solid rgba(250, 204, 21, 0.35);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+
+.queue-earnings {
+  color: var(--yellow);
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* ---------- review queue ---------- */
 .queue-why {
   max-width: 280px;

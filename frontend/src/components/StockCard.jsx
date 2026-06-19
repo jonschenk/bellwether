@@ -168,6 +168,15 @@ export default function StockCard({ stock, onAnalyze, onDeepAnalysis, onPaperBuy
         Avg vol {formatVolume(stock.avg_volume)} · {stock.rel_volume}× today
       </div>
 
+      {stock.earnings_soon && (
+        <div
+          className="earnings-warn"
+          title="Holding through earnings is a binary gap your ATR stop can't cover. Consider waiting until after the report."
+        >
+          ⚠ Earnings in {stock.days_to_earnings} day{stock.days_to_earnings === 1 ? "" : "s"} — gap risk
+        </div>
+      )}
+
       {/* ---- position plan ---- */}
       <div className={`plan ${plan.undersized ? "plan-warn" : ""}`}>
         <div className="plan-head">

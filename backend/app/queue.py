@@ -50,10 +50,14 @@ def _pending(proposals: list[dict]) -> list[dict]:
 
 def _summarize(p: dict) -> dict:
     """The compact ticket the UI renders (without the heavy snapshotted stock row)."""
-    return {k: p[k] for k in (
+    out = {k: p[k] for k in (
         "id", "ticker", "name", "strategy", "regime", "score", "call", "reason",
         "conviction", "plan", "status", "created_at", "decided_at",
     )}
+    # carry the earnings flag from the snapshotted row so the ticket can warn
+    out["days_to_earnings"] = (p.get("stock") or {}).get("days_to_earnings")
+    out["earnings_soon"] = (p.get("stock") or {}).get("earnings_soon", False)
+    return out
 
 
 def view() -> dict:

@@ -1031,6 +1031,11 @@ export default function App() {
                     <td className="pt-ticker">
                       {p.ticker}
                       {p.regime && <span className="muted small"> · {p.regime}</span>}
+                      {p.earnings_soon && (
+                        <span className="queue-earnings" title="Earnings inside the hold window — gap risk">
+                          {" "}⚠ ER {p.days_to_earnings}d
+                        </span>
+                      )}
                     </td>
                     <td>
                       <span className={`strat-chip ${p.strategy === "mean_reversion" ? "strat-meanrev" : "strat-leader"}`}>
