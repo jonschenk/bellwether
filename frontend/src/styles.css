@@ -262,6 +262,27 @@ body {
   border-color: rgba(250, 204, 21, 0.35);
 }
 
+/* ---------- review queue ---------- */
+.queue-why {
+  max-width: 280px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.queue-actions {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.paper-buy-btn.queue-approve {
+  width: auto;
+  display: inline-block;
+  padding: 3px 12px;
+  font-size: 12px;
+  margin-right: 6px;
+}
+
 /* ---------- buttons ---------- */
 .btn {
   display: inline-flex;

@@ -21,6 +21,7 @@ from . import paper
 from . import journal
 from . import regime as regime_mod
 from . import strategy
+from . import queue as review_queue
 from .live import live
 from .scanner import refresh_results, scan_market
 from .trade_case import trade_case
@@ -69,6 +70,8 @@ async def _run_scan(force_fresh: bool = False, scan_strategy: str = "leader_pull
     active = strategy.get_active()
     scan_state["variation"] = {"id": active["id"], "name": active["name"]} if active else None
     scan_state["strategy"] = scan_strategy
+    reg = regime_mod.current_regime()
+    scan_state["regime_label"] = reg.get("regime") if reg.get("available") else None
     scan_state["from_cache"] = (
         not force_fresh and price_cache.is_fresh(settings.universe, settings.cache_minutes)
     )
@@ -327,6 +330,48 @@ async def paper_close(req: PaperCloseRequest) -> dict:
 async def paper_reset(req: PaperResetRequest) -> dict:
     capital = req.capital if req.capital is not None else load_settings().capital
     return paper.reset(capital)
+
+
+# ---- approve/deny review queue (phase 4) ----
+class QueueBuildRequest(BaseModel):
+    top_n: int = review_queue.DEFAULT_TOP_N
+
+
+class QueueDecisionRequest(BaseModel):
+    id: str
+    reason: str = ""
+
+
+@app.get("/api/queue")
+async def queue_view() -> dict:
+    """Pending trade tickets awaiting the human's Approve/Deny + recently decided ones."""
+    return review_queue.view()
+
+
+@app.post("/api/queue/build")
+async def queue_build(req: QueueBuildRequest) -> dict:
+    """Populate the queue from the current scan's best setups (recommended picks first)."""
+    rows = scan_state.get("results") or []
+    if not rows:
+        raise HTTPException(status_code=409, detail="No scan results to build a queue from. Run a scan first.")
+    return review_queue.build(rows, scan_state.get("regime_label"), scan_state.get("strategy", "leader_pullback"), req.top_n)
+
+
+@app.post("/api/queue/approve")
+async def queue_approve(req: QueueDecisionRequest) -> dict:
+    """The human pulls the trigger: open a paper position from this proposal's ticket."""
+    return await asyncio.to_thread(review_queue.approve, req.id)
+
+
+@app.post("/api/queue/deny")
+async def queue_deny(req: QueueDecisionRequest) -> dict:
+    """Pass on a proposal (logs it with the advisor's call for later grading)."""
+    return review_queue.deny(req.id, req.reason)
+
+
+@app.post("/api/queue/clear")
+async def queue_clear() -> dict:
+    return review_queue.clear()
 
 
 _paper_monitor: asyncio.Task | None = None

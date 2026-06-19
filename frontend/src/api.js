@@ -35,6 +35,14 @@ export const getRegime = () => request("/api/regime");
 export const getStrategies = () => request("/api/strategies");
 export const setActiveStrategy = (id) =>
   request("/api/strategies/active", { method: "POST", body: JSON.stringify({ id }) });
+export const getQueue = () => request("/api/queue");
+export const buildQueue = (top_n = 8) =>
+  request("/api/queue/build", { method: "POST", body: JSON.stringify({ top_n }) });
+export const approveProposal = (id) =>
+  request("/api/queue/approve", { method: "POST", body: JSON.stringify({ id }) });
+export const denyProposal = (id, reason = "") =>
+  request("/api/queue/deny", { method: "POST", body: JSON.stringify({ id, reason }) });
+export const clearQueue = () => request("/api/queue/clear", { method: "POST" });
 export const getPaperAccount = () => request("/api/paper/account");
 export const getJournal = () => request("/api/journal");
 export const paperBuy = (ticker) =>

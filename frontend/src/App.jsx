@@ -20,6 +20,11 @@ import {
   getRegime,
   getStrategies,
   setActiveStrategy,
+  getQueue,
+  buildQueue,
+  approveProposal,
+  denyProposal,
+  clearQueue,
 } from "./api.js";
 import StockCard from "./components/StockCard.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
@@ -112,6 +117,9 @@ export default function App() {
   const [showStrategy, setShowStrategy] = useState(false);
   const [scanStrategy, setScanStrategy] = useState("leader_pullback"); // which signal family the scan runs
   const userPickedStrategy = useRef(false); // true once the user manually toggles (stops regime auto-default)
+  const [queue, setQueue] = useState(null); // {pending, decided} approve/deny review queue
+  const [showQueue, setShowQueue] = useState(false);
+  const [queueBusy, setQueueBusy] = useState(false);
   const pollRef = useRef(null);
   const liveRef = useRef(null);
   const refreshingRef = useRef(false);
@@ -352,6 +360,55 @@ export default function App() {
     }
   };
   const activeVariation = strategies?.variations?.[strategies.active] || null;
+
+  // Review queue: load once on mount; refresh while the panel is open.
+  useEffect(() => {
+    getQueue().then(setQueue).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!showQueue) return;
+    const id = setInterval(() => getQueue().then(setQueue).catch(() => {}), 5000);
+    return () => clearInterval(id);
+  }, [showQueue]);
+
+  const onBuildQueue = async () => {
+    setQueueBusy(true);
+    setError(null);
+    try {
+      setQueue(await buildQueue(8));
+      setShowQueue(true);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setQueueBusy(false);
+    }
+  };
+  const onApprove = async (id) => {
+    setQueueBusy(true);
+    try {
+      const res = await approveProposal(id);
+      if (res.error) setError(res.error);
+      else {
+        setQueue({ pending: res.pending, decided: res.decided });
+        if (res.account) setPaper(res.account); // a position just opened
+      }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setQueueBusy(false);
+    }
+  };
+  const onDeny = async (id) => {
+    setQueueBusy(true);
+    try {
+      setQueue(await denyProposal(id));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setQueueBusy(false);
+    }
+  };
+  const pendingCount = queue?.pending?.length || 0;
   const onPaperBuy = async (ticker) => {
     try {
       const a = await paperBuy(ticker);
@@ -562,6 +619,13 @@ export default function App() {
               📈 Paper book{paper.positions?.length ? ` (${paper.positions.length})` : ""}
             </button>
           )}
+          <button
+            className={`btn ghost ${showQueue ? "active" : ""}`}
+            onClick={() => setShowQueue((v) => !v)}
+            title="Review queue — proposed trade tickets you approve (paper buy) or deny"
+          >
+            ✅ Review{pendingCount ? ` (${pendingCount})` : ""}
+          </button>
           <button
             className={`btn ghost ${showStrategy ? "active" : ""}`}
             onClick={() => setShowStrategy((v) => !v)}
@@ -857,6 +921,81 @@ export default function App() {
               </table>
             );
           })()}
+        </div>
+      )}
+
+      {showQueue && (
+        <div className="paper-panel">
+          <div className="paper-summary">
+            <strong>Review queue</strong>
+            <span className="muted">{pendingCount} pending · you approve (paper buy) or deny each</span>
+            <button
+              className="btn export ghost paper-reset"
+              disabled={queueBusy || results.length === 0}
+              onClick={onBuildQueue}
+              title="Fill the queue with the current scan's best setups (recommended picks first)"
+            >
+              {queueBusy ? "Working…" : "Build from current scan"}
+            </button>
+          </div>
+
+          {pendingCount === 0 ? (
+            <p className="muted small" style={{ marginTop: "10px" }}>
+              No pending tickets. Run a scan (optionally hit “Recommend top picks” first), then
+              “Build from current scan” to queue the best setups for review. Approving opens a paper
+              position; denying logs the pass so the advisor’s calls can be graded later.
+            </p>
+          ) : (
+            <table className="paper-table" style={{ marginTop: "4px" }}>
+              <thead>
+                <tr>
+                  <th>Ticker</th><th>Strategy</th><th>Call</th>
+                  <th>Entry→Stop→Target</th><th>Size</th><th>Why</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {queue.pending.map((p) => (
+                  <tr key={p.id}>
+                    <td className="pt-ticker">
+                      {p.ticker}
+                      {p.regime && <span className="muted small"> · {p.regime}</span>}
+                    </td>
+                    <td>
+                      <span className={`strat-chip ${p.strategy === "mean_reversion" ? "strat-meanrev" : "strat-leader"}`}>
+                        {p.strategy === "mean_reversion" ? "🔄 Mean-rev" : "📈 Leader"}
+                      </span>
+                    </td>
+                    <td>{p.call ? <span className={`badge rec-${p.call.toLowerCase()}`}>{p.call}</span> : <span className="muted">—</span>}</td>
+                    <td>
+                      ${usd(p.plan?.entry)} → <span className="neg">${usd(p.plan?.stop)}</span> →{" "}
+                      <span className="pos">${usd(p.plan?.target)}</span>
+                    </td>
+                    <td>{p.plan?.shares} sh · {p.plan?.position_pct}%</td>
+                    <td className="queue-why">{p.reason || <span className="muted">score {p.score}</span>}</td>
+                    <td className="queue-actions">
+                      <button className="paper-buy-btn queue-approve" disabled={queueBusy} onClick={() => onApprove(p.id)}>
+                        ✓ Approve
+                      </button>
+                      <button className="paper-close" disabled={queueBusy} onClick={() => onDeny(p.id)}>
+                        Deny
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {queue?.decided?.length > 0 && (
+            <p className="muted small" style={{ marginTop: "10px" }}>
+              Recently decided:{" "}
+              {queue.decided.slice(0, 8).map((p) => (
+                <span key={p.id} className={p.status === "approved" ? "pos" : "neg"}>
+                  {p.ticker} {p.status === "approved" ? "✓" : "✕"}{"  "}
+                </span>
+              ))}
+            </p>
+          )}
         </div>
       )}
 
