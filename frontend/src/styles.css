@@ -75,6 +75,9 @@ body {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+  /* Absorb the free space so the actions are flush to the right edge — including when they
+     wrap onto their own line below the brand (where space-between would otherwise left-align). */
+  margin-left: auto;
 }
 
 /* Uniform, compact, single-line header controls that wrap cleanly in a narrow window. */
@@ -910,12 +913,19 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
 }
 
 .ticker-row {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0; /* let the company name ellipsize instead of pushing the badges off the card */
+}
+
+.head-badges {
+  flex-shrink: 0; /* badges keep their size; the ticker side gives way first */
 }
 
 .ticker-block {

@@ -93,14 +93,6 @@ export default function StockCard({ stock, onAnalyze, onDeepAnalysis, onPaperBuy
           </button>
         </div>
         <div className="head-badges">
-          <span
-            className={`strat-chip ${isMeanrev ? "strat-meanrev" : "strat-leader"}`}
-            title={isMeanrev
-              ? "Mean reversion: a quality name on a deep oversold dip, targeting the snap-back to its 5-SMA"
-              : "Leader pullback: a trending market leader taking a healthy breather"}
-          >
-            {isMeanrev ? "🔄 Mean-rev" : "📈 Leader"}
-          </span>
           <span className="score" title="Setup score: relative strength + trend + pullback + volatility">
             {stock.setup_score}
           </span>
