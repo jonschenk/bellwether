@@ -40,6 +40,7 @@ STRATEGY_PARAMS = [
     "min_rs_rating",
     "atr_stop_mult",
     "reward_mult",
+    "cap_target_at_high",  # the backtester's biggest lever (uncapping ~doubled expectancy)
     "risk_pct",
     "max_position_pct",
 ]
@@ -127,11 +128,23 @@ def derive(parent_id: str, name: str, changes: dict, notes: str = "") -> dict:
 
 
 def ensure_seeded(settings: ScanSettings) -> dict:
-    """Create the baseline 'v1' from the current settings if nothing exists yet."""
+    """On first run, seed the variation store so the picker has real choices: a 'Baseline' from
+    the current settings, plus the backtester's cost-robust leader-pullback ('Validated bull').
+    Baseline stays active — switching to the validated variant is the user's opt-in, never silent."""
     data = _load()
     if data["variations"]:
         return data["variations"][data["active"]]
-    return create_variation("baseline", params_from_settings(settings), notes="Seeded from current settings.")
+    base = create_variation("Baseline", params_from_settings(settings),
+                            notes="Seeded from current settings (the default leader-pullback).")
+    # The router's bull leg, validated 2007-2025: uncapped 3R target + ADX>=30. Uncapping the 52w
+    # target was the single biggest lever in the backtest (~doubled expectancy).
+    validated = {**params_from_settings(settings),
+                 "reward_mult": 3.0, "cap_target_at_high": False, "adx_min": 30.0}
+    create_variation("Validated bull (3R uncapped · ADX≥30)", validated, parent=base["id"],
+                     notes="Backtester's cost-robust leader-pullback (the regime router's bull leg). "
+                           "Uncapped 3R target + ADX≥30; survives 10bps slippage out-of-sample.")
+    set_active(base["id"])  # keep Baseline active; the user opts into Validated bull via the picker
+    return base
 
 
 def apply_active(settings: ScanSettings) -> ScanSettings:

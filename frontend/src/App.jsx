@@ -18,6 +18,8 @@ import {
   paperReset,
   getJournal,
   getRegime,
+  getStrategies,
+  setActiveStrategy,
 } from "./api.js";
 import StockCard from "./components/StockCard.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
@@ -106,6 +108,8 @@ export default function App() {
   const [liveOn, setLiveOn] = useState(true); // streaming live prices for displayed cards (on by default)
   const [livePrices, setLivePrices] = useState({}); // ticker -> {price, change_percent}
   const [regime, setRegime] = useState(null); // {regime, label, strategy, ...} the router's current call
+  const [strategies, setStrategies] = useState(null); // {active, variations} for the picker
+  const [showStrategy, setShowStrategy] = useState(false);
   const pollRef = useRef(null);
   const liveRef = useRef(null);
   const refreshingRef = useRef(false);
@@ -323,6 +327,23 @@ export default function App() {
       clearInterval(id);
     };
   }, []);
+
+  // Load the strategy variations once on mount (the picker's data).
+  useEffect(() => {
+    getStrategies()
+      .then(setStrategies)
+      .catch(() => {});
+  }, []);
+
+  const onActivateStrategy = async (id) => {
+    try {
+      const next = await setActiveStrategy(id);
+      setStrategies(next);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+  const activeVariation = strategies?.variations?.[strategies.active] || null;
   const onPaperBuy = async (ticker) => {
     try {
       const a = await paperBuy(ticker);
@@ -525,6 +546,13 @@ export default function App() {
               📈 Paper book{paper.positions?.length ? ` (${paper.positions.length})` : ""}
             </button>
           )}
+          <button
+            className={`btn ghost ${showStrategy ? "active" : ""}`}
+            onClick={() => setShowStrategy((v) => !v)}
+            title="Strategy variations — pick which tuned parameter set the scan runs under"
+          >
+            🎛 Strategy{activeVariation ? `: ${activeVariation.name.split(" (")[0]}` : ""}
+          </button>
           <button
             className={`btn ghost ${showJournal ? "active" : ""}`}
             onClick={() => setShowJournal((v) => !v)}
@@ -787,7 +815,84 @@ export default function App() {
         </div>
       )}
 
+      {showStrategy && strategies && (
+        <div className="paper-panel">
+          <div className="paper-summary">
+            <strong>Strategy variations</strong>
+            <span className="muted">the active one drives every scan</span>
+          </div>
+          <table className="paper-table">
+            <thead>
+              <tr><th></th><th>Variation</th><th>Target</th><th>ADX</th><th>RS</th><th>RSI band</th><th></th></tr>
+            </thead>
+            <tbody>
+              {Object.values(strategies.variations).map((v) => {
+                const p = v.params;
+                const isActive = v.id === strategies.active;
+                const target =
+                  p.reward_mult != null
+                    ? `${p.reward_mult}R${p.cap_target_at_high === false ? " uncapped" : ""}`
+                    : "—";
+                return (
+                  <tr key={v.id} title={v.notes}>
+                    <td>{isActive ? <span className="strat-active-dot" /> : null}</td>
+                    <td className="pt-ticker">
+                      {v.name}
+                      {v.id === activeVariation?.id && <span className="muted small"> · {v.id}</span>}
+                    </td>
+                    <td>{target}</td>
+                    <td>{p.adx_min ?? "—"}</td>
+                    <td>{p.min_rs_rating ?? "—"}</td>
+                    <td>{p.rsi_floor != null ? `${p.rsi_floor}–${p.rsi_threshold}` : "—"}</td>
+                    <td>
+                      {isActive ? (
+                        <span className="strat-active-tag">Active</span>
+                      ) : (
+                        <button className="paper-close" onClick={() => onActivateStrategy(v.id)}>
+                          Activate
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {activeVariation?.notes && (
+            <p className="muted small" style={{ marginTop: "10px" }}>{activeVariation.notes}</p>
+          )}
+          <p className="muted small" style={{ marginTop: "6px" }}>
+            New variations are added deliberately in a dev session (the app never rewrites its own
+            strategy). Switching here takes effect on your next scan.
+          </p>
+        </div>
+      )}
+
       <main>
+        {regime?.available && (scan.status === "done" || scan.status === "analyzing") && results.length > 0 && (
+          <div className={`regime-note regime-note-${regime.regime}`}>
+            {regime.regime === "bull" && (
+              <>
+                <strong>Bull market.</strong> Leader-pullback is the validated router's active
+                strategy right now — these momentum setups are on-regime.
+              </>
+            )}
+            {regime.regime === "chop" && (
+              <>
+                <strong>Choppy market.</strong> The validated router would favor mean-reversion
+                (buying deep dips) today. These leader-pullback setups are off-regime — consider
+                sizing down or waiting for a cleaner trend.
+              </>
+            )}
+            {regime.regime === "bear" && (
+              <>
+                <strong>Downtrend.</strong> The validated router would be in <strong>cash</strong> today —
+                leader-pullback bleeds in bear markets. These are shown for awareness, not as a call to act.
+              </>
+            )}
+          </div>
+        )}
+
         {!running && scan.status === "done" && results.length === 0 && (
           <div className="empty">
             <p>No stocks passed the scan with the current criteria.</p>

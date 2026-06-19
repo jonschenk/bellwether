@@ -20,6 +20,7 @@ from . import price_cache
 from . import paper
 from . import journal
 from . import regime as regime_mod
+from . import strategy
 from .live import live
 from .scanner import refresh_results, scan_market
 from .trade_case import trade_case
@@ -60,7 +61,12 @@ def _set_progress(message: str) -> None:
 
 
 async def _run_scan(force_fresh: bool = False) -> None:
-    settings = load_settings()
+    # The scan runs under the ACTIVE strategy variation (its knobs overlaid on the account
+    # settings), so the picker actually drives the scan. Account fields (capital/universe/AI)
+    # stay from settings.json.
+    settings = strategy.apply_active(load_settings())
+    active = strategy.get_active()
+    scan_state["variation"] = {"id": active["id"], "name": active["name"]} if active else None
     scan_state["from_cache"] = (
         not force_fresh and price_cache.is_fresh(settings.universe, settings.cache_minutes)
     )
@@ -96,6 +102,28 @@ async def get_regime() -> dict:
     """Today's market regime (bull/chop/bear) + the strategy the validated router would run.
     Decision-support display only — it never trades. Cached ~1h in the module."""
     return await asyncio.to_thread(regime_mod.current_regime)
+
+
+@app.get("/api/strategies")
+async def get_strategies() -> dict:
+    """The strategy-variation store: the active id + every variation (id/name/params/notes).
+    Drives the variation picker."""
+    strategy.ensure_seeded(load_settings())
+    return {"active": strategy.active_id(), "variations": strategy.list_variations()}
+
+
+class ActiveStrategyRequest(BaseModel):
+    id: str
+
+
+@app.post("/api/strategies/active")
+async def set_active_strategy(req: ActiveStrategyRequest) -> dict:
+    """Switch the active strategy variation. The next scan/refresh runs under it."""
+    try:
+        strategy.set_active(req.id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"No such variation: {req.id}")
+    return {"active": strategy.active_id(), "variations": strategy.list_variations()}
 
 
 def _settings_dict(settings: ScanSettings) -> dict:
@@ -150,7 +178,7 @@ async def refresh_scan() -> dict:
         return scan_state
     scan_state["refreshing"] = True
     try:
-        settings = load_settings()
+        settings = strategy.apply_active(load_settings())  # same strategy the scan used
         scan_state["results"] = await asyncio.to_thread(refresh_results, settings, rows)
         scan_state["refreshed_at"] = time.time()
     except Exception:
@@ -305,6 +333,8 @@ async def _startup() -> None:
     # Seed a fresh paper account from the user's capital on first run.
     if not paper.ACCOUNT_PATH.exists():
         paper.reset(load_settings().capital)
+    # Seed the strategy-variation store (Baseline + Validated bull) so the picker has choices.
+    strategy.ensure_seeded(load_settings())
     _paper_monitor = asyncio.create_task(paper.monitor_loop())
 
 

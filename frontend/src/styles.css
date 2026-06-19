@@ -170,6 +170,53 @@ body {
   border-color: rgba(248, 113, 113, 0.4);
 }
 
+/* ---------- regime advisory note (above results) ---------- */
+.regime-note {
+  border-radius: 10px;
+  padding: 11px 14px;
+  margin-bottom: 16px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+}
+
+.regime-note strong {
+  color: var(--text);
+}
+
+.regime-note-bull {
+  background: rgba(74, 222, 128, 0.07);
+  border-color: rgba(74, 222, 128, 0.3);
+}
+
+.regime-note-chop {
+  background: rgba(250, 204, 21, 0.07);
+  border-color: rgba(250, 204, 21, 0.35);
+}
+
+.regime-note-bear {
+  background: rgba(248, 113, 113, 0.08);
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
+/* ---------- strategy picker ---------- */
+.strat-active-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+.strat-active-tag {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--accent);
+}
+
 /* ---------- buttons ---------- */
 .btn {
   display: inline-flex;

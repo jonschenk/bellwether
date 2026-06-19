@@ -32,6 +32,9 @@ export const getRecommendations = (positions = [], top_n = 12) =>
 export const getScanStatus = () => request("/api/scan/status");
 export const getHealth = () => request("/api/health");
 export const getRegime = () => request("/api/regime");
+export const getStrategies = () => request("/api/strategies");
+export const setActiveStrategy = (id) =>
+  request("/api/strategies/active", { method: "POST", body: JSON.stringify({ id }) });
 export const getPaperAccount = () => request("/api/paper/account");
 export const getJournal = () => request("/api/journal");
 export const paperBuy = (ticker) =>
