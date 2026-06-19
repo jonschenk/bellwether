@@ -71,21 +71,36 @@ def write_strategy_md(title: str, table_md: str, note: str = "") -> Path:
 
 # ----------------------------------------------------------------- data
 
+_DL_BATCH = 200  # download in chunks so the full universe (~5,900 names) is robust, not one giant call
+
+
 def _download(tickers: list[str], start: str, end: str) -> dict[str, pd.DataFrame]:
-    """Daily OHLCV per ticker over [start, end]. Split/div-adjusted (auto_adjust)."""
-    raw = yf.download(
-        tickers, start=start, end=end, interval="1d",
-        auto_adjust=True, group_by="ticker", progress=False, threads=True,
-    )
+    """Daily OHLCV per ticker over [start, end], split/div-adjusted. Downloaded in batches so the
+    full-market universe doesn't hinge on a single huge request, with progress logged per batch."""
     out: dict[str, pd.DataFrame] = {}
-    for t in tickers:
+    total = len(tickers)
+    for i in range(0, total, _DL_BATCH):
+        batch = tickers[i : i + _DL_BATCH]
         try:
-            df = raw[t] if isinstance(raw.columns, pd.MultiIndex) else raw
-            df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
-            if len(df) >= MIN_BARS:
-                out[t] = df
-        except (KeyError, Exception):
+            raw = yf.download(
+                batch, start=start, end=end, interval="1d",
+                auto_adjust=True, group_by="ticker", progress=False, threads=True,
+            )
+        except Exception:
+            log.exception("Batch download failed for %s..%s", batch[0], batch[-1])
             continue
+        if raw is None or raw.empty:
+            continue
+        for t in batch:
+            try:
+                df = raw[t] if isinstance(raw.columns, pd.MultiIndex) else raw
+                df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+                if len(df) >= MIN_BARS:
+                    out[t] = df
+            except (KeyError, Exception):
+                continue
+        if total > _DL_BATCH:
+            log.info("  downloaded %d/%d names (%d with usable history)…", min(i + _DL_BATCH, total), total, len(out))
     return out
 
 
