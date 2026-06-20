@@ -16,19 +16,39 @@ paper_account.json (gitignored); closed trades live in the journal for the score
 """
 
 import asyncio
+import datetime as dt
 import json
 import logging
 import time
+import uuid
 from pathlib import Path
 
+from . import alert_engine
 from . import journal
 from .config import ScanSettings
 from .universe import bulk_quote
 
 log = logging.getLogger(__name__)
 
+
+def _now() -> str:
+    return dt.datetime.now().isoformat(timespec="seconds")
+
+
+def _et_today() -> str:
+    return alert_engine._now_et().date().isoformat()
+
+
+def _market_open() -> bool:
+    return alert_engine.market_open()
+
 ACCOUNT_PATH = Path(__file__).resolve().parents[1] / "paper_account.json"
 TICK_SECONDS = 5  # how often the bracket monitor re-marks open positions
+
+# Per-side slippage haircut on market fills (matches the backtester's 5bps default), so the paper
+# scoreboard isn't rosier than reality: a market buy pays UP, a sell/stop/target fills LOWER. Limit
+# fills are exempt (you get your price or better — that's the point of using one).
+SLIPPAGE_BPS = 5.0
 
 _regime_cache: tuple[float, str] | None = None  # (fetched_at, label), refreshed ~hourly
 
@@ -36,10 +56,12 @@ _regime_cache: tuple[float, str] | None = None  # (fetched_at, label), refreshed
 def _load() -> dict:
     if ACCOUNT_PATH.exists():
         try:
-            return json.loads(ACCOUNT_PATH.read_text())
+            acct = json.loads(ACCOUNT_PATH.read_text())
+            acct.setdefault("orders", {})  # resting MOO/limit orders (added later; back-compat)
+            return acct
         except (json.JSONDecodeError, OSError):
             log.exception("paper_account.json unreadable; starting fresh")
-    return {"starting_cash": 0.0, "cash": 0.0, "positions": {}}
+    return {"starting_cash": 0.0, "cash": 0.0, "positions": {}, "orders": {}}
 
 
 def _save(acct: dict) -> None:
@@ -47,9 +69,9 @@ def _save(acct: dict) -> None:
 
 
 def reset(capital: float) -> dict:
-    """Start a fresh paper account with `capital` cash and no open positions.
+    """Start a fresh paper account with `capital` cash, no open positions, no resting orders.
     (Closed trades stay in the journal as history.)"""
-    acct = {"starting_cash": round(capital, 2), "cash": round(capital, 2), "positions": {}}
+    acct = {"starting_cash": round(capital, 2), "cash": round(capital, 2), "positions": {}, "orders": {}}
     _save(acct)
     return account()
 
@@ -63,27 +85,18 @@ def _quote(tickers: list[str]) -> dict[str, float]:
     return out
 
 
-def buy(stock: dict) -> dict:
-    """Place a paper market buy for one scanned setup. Fills at the current live
-    price; stop/target come from the setup's plan. Returns the account snapshot or
-    an {error} dict if it can't be sized/afforded."""
+def _open_position(acct: dict, stock: dict, fill: float) -> dict:
+    """Open a position in `acct` at `fill` (filled price already incl. any slippage), logging the
+    trade to the journal. Mutates acct; the caller saves. Returns {trade} or {error}."""
     plan = stock.get("plan") or {}
     shares = plan.get("shares") or 0
-    if shares <= 0:
-        return {"error": "No share plan for this setup."}
-
-    fill = _quote([stock["ticker"]]).get(stock["ticker"]) or plan.get("entry")
-    if not fill:
-        return {"error": "Could not get a fill price (market may be closed)."}
-
-    acct = _load()
+    fill = round(fill, 2)
     cost = round(shares * fill, 2)
     if cost > acct["cash"]:
         return {"error": f"Not enough paper cash (${acct['cash']:,.0f}) for {shares} x ${fill:.2f}."}
 
-    # Fill the entry at the live price; the trade's stop/target are the planned levels.
     sized = dict(stock)
-    sized["plan"] = {**plan, "entry": round(fill, 2)}
+    sized["plan"] = {**plan, "entry": fill}
     vid, vparams = _active_variation()
     trade = journal.log_trade(
         sized, vid,
@@ -91,21 +104,84 @@ def buy(stock: dict) -> dict:
         decision=(stock.get("trade_case") or {}).get("recommendation"),
         market_regime=_market_regime(),
     )
-
     acct["cash"] = round(acct["cash"] - cost, 2)
     acct["positions"][trade["id"]] = {
         "ticker": stock["ticker"],
         "name": stock.get("name", ""),
         "shares": shares,
-        "entry": round(fill, 2),
+        "entry": fill,
         "stop": plan.get("stop"),
         "target": plan.get("target"),
         "opened_at": trade["opened_at"],
         "decision": trade.get("decision"),
-        "current": round(fill, 2),
-        "mae": round(fill, 2),  # lowest price seen while held
-        "mfe": round(fill, 2),  # highest price seen while held
+        "current": fill,
+        "mae": fill,  # lowest price seen while held
+        "mfe": fill,  # highest price seen while held
     }
+    return {"trade": trade}
+
+
+def buy(stock: dict) -> dict:
+    """Place a paper MARKET buy: fill immediately at the live quote (+slippage). Returns the
+    account snapshot or an {error}."""
+    plan = stock.get("plan") or {}
+    if (plan.get("shares") or 0) <= 0:
+        return {"error": "No share plan for this setup."}
+    fill = _quote([stock["ticker"]]).get(stock["ticker"]) or plan.get("entry")
+    if not fill:
+        return {"error": "Could not get a fill price (market may be closed)."}
+    fill = fill * (1 + SLIPPAGE_BPS / 10000)  # market buy pays up (slippage)
+    acct = _load()
+    res = _open_position(acct, stock, fill)
+    if res.get("error"):
+        return res
+    _save(acct)
+    return account()
+
+
+def place_order(stock: dict, order_type: str, limit_price: float | None = None) -> dict:
+    """Place a RESTING paper order that fills later: 'moo' at the next market open, 'limit' when
+    the price reaches the planned entry. The monitor loop fills it (see _process_orders)."""
+    plan = stock.get("plan") or {}
+    shares = plan.get("shares") or 0
+    if shares <= 0:
+        return {"error": "No share plan for this setup."}
+    if order_type == "limit" and not limit_price:
+        limit_price = plan.get("entry")
+    acct = _load()
+    oid = uuid.uuid4().hex[:8]
+    acct["orders"][oid] = {
+        "id": oid,
+        "ticker": stock["ticker"],
+        "name": stock.get("name", ""),
+        "type": order_type,                       # "moo" | "limit"
+        "limit_price": round(limit_price, 2) if (order_type == "limit" and limit_price) else None,
+        "shares": shares,
+        "stop": plan.get("stop"),
+        "target": plan.get("target"),
+        "stock": stock,                           # snapshot so the fill can open + journal it
+        "placed_at": _now(),
+        # the ET session date if placed during market hours, else None (placed while closed)
+        "placed_session": _et_today() if _market_open() else None,
+    }
+    _save(acct)
+    return account()
+
+
+def submit(stock: dict, settings) -> dict:
+    """Dispatch a paper order per the account's order-type preference: market fills now;
+    moo/limit rest until their condition. The one entry point used by manual buys, the queue's
+    Approve, and auto-trade — so all three honour the chosen order type."""
+    otype = getattr(settings, "paper_order_type", "market")
+    if otype in ("moo", "limit"):
+        return place_order(stock, otype)
+    return buy(stock)
+
+
+def cancel_order(order_id: str) -> dict:
+    acct = _load()
+    if acct["orders"].pop(order_id, None) is None:
+        return {"error": "No such resting order."}
     _save(acct)
     return account()
 
@@ -115,9 +191,13 @@ def auto_execute(results: list[dict], max_positions: int = 5, exclude: set[str] 
     this only ever calls the paper buy() path; it has no route to a real broker. Used by the alert
     engine's auto-trade mode. Guardrails: cap concurrent positions, skip names already held / in
     `exclude` / flagged for imminent earnings / unsizable. Returns what it bought + why it skipped."""
+    from .config import load_settings
+    settings = load_settings()
     exclude = exclude or set()
-    held = {p["ticker"] for p in account().get("positions", [])}
-    open_count = len(held)
+    acct = account()
+    # open positions AND resting orders both count against the cap / dedup
+    held = {p["ticker"] for p in acct.get("positions", [])} | {o["ticker"] for o in acct.get("orders", [])}
+    open_count = len(acct.get("positions", [])) + len(acct.get("orders", []))
     bought: list[str] = []
     skipped: list[dict] = []
 
@@ -127,14 +207,14 @@ def auto_execute(results: list[dict], max_positions: int = 5, exclude: set[str] 
             skipped.append({"ticker": ticker, "reason": "max positions reached"})
             continue
         if ticker in held or ticker in exclude:
-            continue  # already held or already acted on today
+            continue  # already held/ordered or already acted on today
         if r.get("earnings_soon"):
             skipped.append({"ticker": ticker, "reason": f"earnings in {r.get('days_to_earnings')}d"})
             continue
         if not (r.get("plan") or {}).get("shares"):
             skipped.append({"ticker": ticker, "reason": "not sizable"})
             continue
-        res = buy(r)
+        res = submit(r, settings)  # honours the order type (market fills now; moo/limit rest)
         if res.get("error"):
             skipped.append({"ticker": ticker, "reason": res["error"]})
             continue
@@ -152,6 +232,7 @@ def close(trade_id: str, exit_price: float | None = None, reason: str = "manual"
     if pos is None:
         return {"error": "No such open paper position."}
     px = exit_price or _quote([pos["ticker"]]).get(pos["ticker"]) or pos["current"]
+    px = round(px * (1 - SLIPPAGE_BPS / 10000), 2)  # sell/stop/target fills lower (slippage)
     acct["cash"] = round(acct["cash"] + pos["shares"] * px, 2)
     try:
         journal.close_trade(trade_id, round(px, 2), exit_reason=reason, mae=pos.get("mae"), mfe=pos.get("mfe"))
@@ -184,16 +265,58 @@ def _mark_and_bracket(acct: dict, prices: dict[str, float]) -> bool:
     return changed
 
 
+def _process_orders(acct: dict, prices: dict[str, float]) -> bool:
+    """Fill resting MOO/limit orders whose condition is met. MOO fills at the next session's open
+    (the first marked price once the market is open, after any configured buffer); limit fills when
+    the price reaches the planned entry. Returns True if anything filled."""
+    orders = acct.get("orders") or {}
+    if not orders:
+        return False
+    open_now = _market_open()
+    now_et = alert_engine._now_et()
+    try:
+        from .config import load_settings
+        buffer_min = load_settings().open_buffer_minutes
+    except Exception:
+        buffer_min = 0
+    fill_after = (dt.datetime.combine(now_et.date(), dt.time(9, 30)) + dt.timedelta(minutes=buffer_min)).time()
+
+    changed = False
+    for oid, o in list(orders.items()):
+        px = prices.get(o["ticker"])
+        if not px:
+            continue
+        fill_px = None
+        if o["type"] == "limit":
+            if open_now and o.get("limit_price") and px <= o["limit_price"]:
+                fill_px = round(min(px, o["limit_price"]), 2)  # at the limit or better; no slippage
+        elif o["type"] == "moo":
+            new_session = o.get("placed_session") is None or _et_today() > o["placed_session"]
+            if open_now and new_session and now_et.time() >= fill_after:
+                fill_px = round(px * (1 + SLIPPAGE_BPS / 10000), 2)  # market-on-open pays up
+        if fill_px is None:
+            continue
+        res = _open_position(acct, o["stock"], fill_px)
+        if res.get("error"):
+            log.warning("dropping paper order for %s: %s", o["ticker"], res["error"])
+        del acct["orders"][oid]
+        changed = True
+    return changed
+
+
 async def monitor_loop() -> None:
-    """Background task: every few seconds, mark open positions to the live quote and
-    run the bracket. Does nothing while there are no open positions."""
+    """Background task: every few seconds, mark open positions, run the bracket, and fill any
+    resting MOO/limit orders. Idle when there are no positions and no orders."""
     while True:
         try:
             acct = _load()
-            tickers = [p["ticker"] for p in acct["positions"].values()]
+            tickers = list({p["ticker"] for p in acct["positions"].values()}
+                           | {o["ticker"] for o in acct.get("orders", {}).values()})
             if tickers:
                 prices = await asyncio.to_thread(_quote, tickers)
-                if _mark_and_bracket(acct, prices):
+                changed = _mark_and_bracket(acct, prices)
+                changed = _process_orders(acct, prices) or changed
+                if changed:
                     _save(acct)
         except Exception:
             log.exception("paper monitor tick failed")
@@ -223,6 +346,11 @@ def account() -> dict:
         open_pnl += upnl
         invested += cur * p["shares"]
     positions.sort(key=lambda x: x["opened_at"])
+    orders = [
+        {"id": oid, **{k: o.get(k) for k in ("ticker", "name", "type", "limit_price", "shares", "stop", "target", "placed_at")}}
+        for oid, o in acct.get("orders", {}).items()
+    ]
+    orders.sort(key=lambda x: x["placed_at"])
     equity = round(acct["cash"] + invested, 2)
     total_pnl = round(equity - acct["starting_cash"], 2) if acct["starting_cash"] else 0.0
     return {
@@ -233,6 +361,7 @@ def account() -> dict:
         "realized_pnl": round(total_pnl - open_pnl, 2),  # closed-trade P&L = total minus unrealized
         "total_pnl": total_pnl,
         "positions": positions,
+        "orders": orders,
     }
 
 

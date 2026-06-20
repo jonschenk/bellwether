@@ -126,7 +126,8 @@ def approve(proposal_id: str) -> dict:
     p = next((x for x in proposals if x["id"] == proposal_id and x["status"] == "pending"), None)
     if p is None:
         return {"error": "No such pending proposal."}
-    acct = paper.buy(p["stock"])
+    from .config import load_settings
+    acct = paper.submit(p["stock"], load_settings())  # honours the order-type setting (market/moo/limit)
     if acct.get("error"):
         return {"error": acct["error"]}  # leave it pending so the user can retry
     p["status"] = "approved"

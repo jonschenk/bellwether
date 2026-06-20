@@ -776,8 +776,23 @@ body {
   margin-bottom: 10px;
 }
 
-.paper-reset {
+.paper-ordertype {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.paper-ordertype select {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.paper-reset {
   padding: 4px 12px;
   font-size: 12px;
 }

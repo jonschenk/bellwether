@@ -34,6 +34,13 @@ class ScanSettings(BaseModel):
     min_price: float = Field(default=15.0, ge=0)
     min_avg_volume: int = Field(default=500_000, ge=0)
 
+    # --- paper execution ---
+    # How paper orders fill: "market" = immediately at the live quote (+slippage); "moo" =
+    # rest until the next market open and fill there (faithful to the backtest's T+1-open entry);
+    # "limit" = rest and fill only at/below the planned entry (no chasing the open, no slippage).
+    paper_order_type: str = Field(default="market")
+    open_buffer_minutes: int = Field(default=0, ge=0, le=120)  # MOO: wait this long after 9:30 ET to fill (skip the squirrely open)
+
     # --- earnings risk ---
     # Flag a setup whose next earnings report falls within this many days (a binary gap the ATR
     # stop can't cover). 0 = don't check earnings. Flagged setups are surfaced with a warning and
@@ -61,6 +68,11 @@ class ScanSettings(BaseModel):
     @classmethod
     def _valid_universe(cls, v: str) -> str:
         return v if v in ("full", "curated") else "full"
+
+    @field_validator("paper_order_type")
+    @classmethod
+    def _valid_order_type(cls, v: str) -> str:
+        return v if v in ("market", "moo", "limit") else "market"
 
     @property
     def max_price(self) -> float:

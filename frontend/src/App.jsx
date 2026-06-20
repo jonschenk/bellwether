@@ -15,6 +15,7 @@ import {
   getPaperAccount,
   paperBuy,
   paperClose,
+  paperCancel,
   paperReset,
   getJournal,
   getRegime,
@@ -498,6 +499,21 @@ export default function App() {
       setError(e.message);
     }
   };
+  const onCancelOrder = async (orderId) => {
+    try {
+      setPaper(await paperCancel(orderId));
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+  const onSetOrderType = async (paper_order_type) => {
+    if (!settings) return;
+    try {
+      setSettings(await saveSettings({ ...settingsPayload(settings), paper_order_type }));
+    } catch (e) {
+      setError(e.message);
+    }
+  };
 
   const pickStrategy = (s) => {
     userPickedStrategy.current = true; // stop the regime from auto-switching it back
@@ -874,6 +890,16 @@ export default function App() {
             <span className={paper.realized_pnl >= 0 ? "pos" : "neg"}>
               Realized {paper.realized_pnl >= 0 ? "+" : "−"}${usd(Math.abs(paper.realized_pnl))}
             </span>
+            {settings && (
+              <label className="paper-ordertype muted small" title="How paper orders fill. Market = now (+slippage); At next open = rest until the open (matches the backtest); Limit = rest and fill only at your entry price (no chasing the open).">
+                Fills
+                <select value={settings.paper_order_type || "market"} onChange={(e) => onSetOrderType(e.target.value)}>
+                  <option value="market">Market (now)</option>
+                  <option value="moo">At next open</option>
+                  <option value="limit">Limit @ entry</option>
+                </select>
+              </label>
+            )}
             <button className="btn export ghost paper-reset" onClick={onPaperReset} title="Start the paper account fresh from your capital">
               Reset
             </button>
@@ -913,6 +939,32 @@ export default function App() {
                 ))}
               </tbody>
             </table>
+          )}
+
+          {paper.orders?.length > 0 && (
+            <>
+              <div className="muted small" style={{ margin: "12px 0 4px" }}>
+                Resting orders ({paper.orders.length}) — fill when their condition is met
+              </div>
+              <table className="paper-table">
+                <thead>
+                  <tr><th>Ticker</th><th>Type</th><th>Sh</th><th>Limit / fill</th><th>Stop</th><th>Target</th><th></th></tr>
+                </thead>
+                <tbody>
+                  {paper.orders.map((o) => (
+                    <tr key={o.id}>
+                      <td className="pt-ticker">{o.ticker}</td>
+                      <td>{o.type === "moo" ? "At next open" : "Limit"}</td>
+                      <td>{o.shares}</td>
+                      <td>{o.type === "limit" ? `$${usd(o.limit_price)}` : "next open"}</td>
+                      <td>${usd(o.stop)}</td>
+                      <td>${usd(o.target)}</td>
+                      <td><button className="paper-close" onClick={() => onCancelOrder(o.id)}>Cancel</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
           )}
         </div>
       )}

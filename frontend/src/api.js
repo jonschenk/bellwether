@@ -52,6 +52,8 @@ export const paperBuy = (ticker) =>
   request("/api/paper/buy", { method: "POST", body: JSON.stringify({ ticker }) });
 export const paperClose = (trade_id) =>
   request("/api/paper/close", { method: "POST", body: JSON.stringify({ trade_id }) });
+export const paperCancel = (order_id) =>
+  request("/api/paper/cancel", { method: "POST", body: JSON.stringify({ order_id }) });
 export const paperReset = (capital) =>
   request("/api/paper/reset", { method: "POST", body: JSON.stringify({ capital }) });
 export const startLive = () => request("/api/live/start", { method: "POST" });

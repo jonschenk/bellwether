@@ -314,17 +314,28 @@ async def paper_account() -> dict:
 
 @app.post("/api/paper/buy")
 async def paper_buy(req: PaperBuyRequest) -> dict:
-    """Open a paper position for a currently-scanned ticker, filled at the live price."""
+    """Place a paper order for a currently-scanned ticker, honouring the order-type setting
+    (market fills now; moo/limit rest until their condition)."""
     rows = scan_state.get("results") or []
     stock = next((r for r in rows if r["ticker"] == req.ticker), None)
     if stock is None:
         raise HTTPException(status_code=404, detail="Ticker is not in the current results")
-    return await asyncio.to_thread(paper.buy, stock)
+    return await asyncio.to_thread(paper.submit, stock, load_settings())
 
 
 @app.post("/api/paper/close")
 async def paper_close(req: PaperCloseRequest) -> dict:
     return await asyncio.to_thread(paper.close, req.trade_id, req.exit_price)
+
+
+class PaperCancelRequest(BaseModel):
+    order_id: str
+
+
+@app.post("/api/paper/cancel")
+async def paper_cancel(req: PaperCancelRequest) -> dict:
+    """Cancel a resting MOO/limit paper order."""
+    return await asyncio.to_thread(paper.cancel_order, req.order_id)
 
 
 @app.post("/api/paper/reset")
