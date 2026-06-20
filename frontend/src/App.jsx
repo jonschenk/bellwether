@@ -25,7 +25,6 @@ import {
   buildQueue,
   approveProposal,
   denyProposal,
-  clearQueue,
   getAlertEngine,
   setAlertEngine,
 } from "./api.js";
@@ -46,11 +45,6 @@ function formatDuration(totalSeconds) {
 
 function formatClock(epochSeconds) {
   return new Date(epochSeconds * 1000).toLocaleTimeString();
-}
-
-// ThinkorSwim uses a dot for class shares (BRK.B); we store Yahoo's dash (BRK-B).
-function tosSymbols(results) {
-  return results.map((r) => r.ticker.replace(/-/g, "."));
 }
 
 // Client-side CSV export of the journal — portable, hand back to Claude for analysis.
@@ -127,7 +121,6 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState(null);
   const [now, setNow] = useState(Date.now() / 1000); // ticks each second while running
-  const [exportNote, setExportNote] = useState(""); // transient "copied"/"saved" confirmation
   const [holdings, setHoldings] = useState(() => localStorage.getItem("holdings") || "");
   const [showHoldings, setShowHoldings] = useState(false);
   const [paper, setPaper] = useState(null); // paper account snapshot (cash/equity/positions)
@@ -541,40 +534,6 @@ export default function App() {
     (a, b) => (a.recommendation?.rank ?? Infinity) - (b.recommendation?.rank ?? Infinity),
   );
 
-  const flashExportNote = (msg) => {
-    setExportNote(msg);
-    setTimeout(() => setExportNote(""), 2000);
-  };
-
-  // Copy all displayed tickers to the clipboard for ThinkorSwim's watchlist
-  // "Paste symbols from clipboard" import (the most reliable path). One per line
-  // also makes the list handy to paste anywhere else.
-  const copyForToS = async () => {
-    const syms = tosSymbols(results);
-    if (!syms.length) return;
-    try {
-      await navigator.clipboard.writeText(syms.join("\n"));
-      flashExportNote(`Copied ${syms.length} tickers`);
-    } catch {
-      flashExportNote("Clipboard unavailable");
-    }
-  };
-
-  // Download the tickers as a .csv for ThinkorSwim's file import (Watchlist menu
-  // -> Import). One symbol per line, no header — ToS detects the symbols.
-  const downloadWatchlist = () => {
-    const syms = tosSymbols(results);
-    if (!syms.length) return;
-    const blob = new Blob([syms.join("\n") + "\n"], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "swing-scanner-watchlist.csv";
-    a.click();
-    URL.revokeObjectURL(url);
-    flashExportNote(`Saved ${syms.length} tickers`);
-  };
-
   // Signature of the tickers on screen — re-subscribe the stream when it changes.
   const tickerKey = results.map((r) => r.ticker).join(",");
 
@@ -817,15 +776,6 @@ export default function App() {
               <>✨ Recommend top picks</>
             )}
           </button>
-          {/* ThinkorSwim export disabled for now — re-enable by uncommenting.
-          <button className="btn export" onClick={copyForToS} title="Copy all tickers for ThinkorSwim's 'Paste symbols from clipboard' import">
-            Copy tickers for ThinkorSwim
-          </button>
-          <button className="btn export ghost" onClick={downloadWatchlist} title="Download a .csv for ThinkorSwim's Watchlist → Import">
-            Export .csv
-          </button>
-          {exportNote && <span className="export-note muted small">{exportNote} ✓</span>}
-          */}
           <button
             className={`btn export ${showHoldings ? "on" : ""}`}
             onClick={() => setShowHoldings((v) => !v)}

@@ -14,7 +14,6 @@ Each match is then sized to the trader's account with an ATR stop + the risk rul
 
 import logging
 import math
-from pathlib import Path
 from typing import Callable, Optional
 
 import pandas as pd
