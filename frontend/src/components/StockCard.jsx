@@ -173,7 +173,7 @@ export default function StockCard({ stock, onAnalyze, onDeepAnalysis, onPaperBuy
           className="earnings-warn"
           title="Holding through earnings is a binary gap your ATR stop can't cover. Consider waiting until after the report."
         >
-          ⚠ Earnings in {stock.days_to_earnings} day{stock.days_to_earnings === 1 ? "" : "s"} — gap risk
+          ⚠ Earnings in {stock.days_to_earnings} day{stock.days_to_earnings === 1 ? "" : "s"}
         </div>
       )}
 

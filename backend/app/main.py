@@ -379,6 +379,8 @@ async def queue_clear() -> dict:
 class AlertEngineRequest(BaseModel):
     enabled: bool | None = None
     interval_minutes: int | None = None
+    mode: str | None = None
+    max_positions: int | None = None
 
 
 @app.get("/api/alerts/engine")
@@ -388,7 +390,7 @@ async def alert_engine_state() -> dict:
 
 @app.post("/api/alerts/engine")
 async def alert_engine_configure(req: AlertEngineRequest) -> dict:
-    return alert_engine.configure(req.enabled, req.interval_minutes)
+    return alert_engine.configure(req.enabled, req.interval_minutes, req.mode, req.max_positions)
 
 
 ALERT_TICK_SECONDS = 60  # how often to check whether a cycle is due
@@ -413,8 +415,16 @@ async def _alert_cycle() -> None:
     strat = "mean_reversion" if regime == "chop" else "leader_pullback"
     await _run_scan(force_fresh=False, scan_strategy=strat)
     rows = scan_state.get("results") or []
-    res = review_queue.build(rows, regime, strat, exclude=alert_engine.exclude_today())
-    alert_engine.record("watching", regime=regime, strategy=strat, new_tickers=res.get("added_tickers", []))
+    exclude = alert_engine.exclude_today()
+    if alert_engine.auto_mode():
+        # PAPER-ONLY auto-execute: open positions for the gated setups (the kill-switch already
+        # returned for bear above). Nothing here can reach a real broker.
+        st = alert_engine.state()
+        res = await asyncio.to_thread(paper.auto_execute, rows, st.get("max_positions", 5), exclude)
+        alert_engine.record("auto-traded", regime=regime, strategy=strat, new_tickers=res.get("bought", []))
+    else:
+        res = review_queue.build(rows, regime, strat, exclude=exclude)
+        alert_engine.record("watching", regime=regime, strategy=strat, new_tickers=res.get("added_tickers", []))
 
 
 async def _alert_loop() -> None:

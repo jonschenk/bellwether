@@ -369,6 +369,37 @@ body {
   opacity: 0.5;
 }
 
+.engine-mode {
+  width: auto;
+  display: inline-flex;
+  padding: 2px;
+}
+
+.engine-mode .seg-btn {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.engine-maxpos {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.engine-maxpos select {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.engine-maxpos select:disabled {
+  opacity: 0.5;
+}
+
 .engine-status {
   margin-left: auto;
   text-align: right;

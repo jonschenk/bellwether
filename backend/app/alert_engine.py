@@ -27,6 +27,8 @@ _ET = ZoneInfo("America/New_York")
 DEFAULTS = {
     "enabled": False,
     "interval_minutes": 30,
+    "mode": "review",        # "review" = fill the queue for approval; "auto" = auto-open PAPER positions
+    "max_positions": 5,      # auto mode: cap on concurrent open paper positions
     "last_run": None,        # ISO timestamp of the last completed run
     "last_status": "idle",   # idle | watching | scanning | market-closed | bear-cash | error
     "last_regime": None,
@@ -71,15 +73,24 @@ def state() -> dict:
     return {**d, "market_open": market_open(), "et_now": _now_et().isoformat(timespec="seconds")}
 
 
-def configure(enabled: bool | None = None, interval_minutes: int | None = None) -> dict:
+def configure(enabled: bool | None = None, interval_minutes: int | None = None,
+              mode: str | None = None, max_positions: int | None = None) -> dict:
     d = _load()
     if enabled is not None:
         d["enabled"] = bool(enabled)
         d["last_status"] = "watching" if enabled else "idle"
     if interval_minutes is not None:
         d["interval_minutes"] = max(5, min(int(interval_minutes), 240))
+    if mode in ("review", "auto"):
+        d["mode"] = mode
+    if max_positions is not None:
+        d["max_positions"] = max(1, min(int(max_positions), 50))
     _save(d)
     return state()
+
+
+def auto_mode() -> bool:
+    return _load().get("mode") == "auto"
 
 
 def due(now: dt.datetime | None = None) -> bool:

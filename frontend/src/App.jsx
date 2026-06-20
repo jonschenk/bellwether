@@ -82,16 +82,19 @@ function usd(n) {
 
 // Plain-English status line for the alert engine.
 function engineStatusText(e) {
-  if (!e?.enabled) return "Off — turn on to auto-scan during market hours and queue setups for review.";
+  if (!e?.enabled) return "Off — turn on to auto-scan during market hours.";
+  const auto = e.mode === "auto";
   const strat = { leader_pullback: "leader-pullback", mean_reversion: "mean-reversion", cash: "cash" }[e.last_strategy] || e.last_strategy;
   const ran = e.last_run ? ` · last ran ${new Date(e.last_run).toLocaleTimeString()}` : "";
   switch (e.last_status) {
     case "watching":
       return `Watching · ${e.market_open ? "market open" : "market closed"}${e.last_regime ? ` · ${e.last_regime} → ${strat}` : ""}${ran}`;
+    case "auto-traded":
+      return `Auto-trading (paper) · ${e.last_regime} → ${strat} · opened ${e.last_new_count} last run${ran}`;
     case "market-closed":
-      return "On · waiting for the market to open (9:30–16:00 ET, Mon–Fri)";
+      return `On · waiting for the market to open (9:30–16:00 ET, Mon–Fri)${auto ? " · will auto-trade (paper)" : ""}`;
     case "bear-cash":
-      return `On · Bear regime — holding cash, queuing nothing${ran}`;
+      return `On · Bear regime — holding cash, doing nothing${ran}`;
     case "error":
       return "On · couldn’t read the market just now — retrying";
     default:
@@ -413,6 +416,20 @@ export default function App() {
   const onSetInterval = async (interval_minutes) => {
     try {
       setAlertEngineState(await setAlertEngine({ interval_minutes }));
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+  const onSetEngineMode = async (mode) => {
+    try {
+      setAlertEngineState(await setAlertEngine({ mode }));
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+  const onSetMaxPositions = async (max_positions) => {
+    try {
+      setAlertEngineState(await setAlertEngine({ max_positions }));
     } catch (e) {
       setError(e.message);
     }
@@ -987,7 +1004,7 @@ export default function App() {
 
           {alertEngine && (
             <div className="alert-engine-row">
-              <label className="engine-toggle" title="Auto-scan during market hours and queue new setups for review. Honours the regime: bull→leader, chop→mean-reversion, bear→cash. Opt-in; nothing trades without your Approve.">
+              <label className="engine-toggle" title="Auto-scan during market hours, honouring the regime (bull→leader, chop→mean-reversion, bear→cash). Review mode queues setups for your approval; Auto-trade mode auto-opens PAPER positions — paper only, never a real order.">
                 <input
                   type="checkbox"
                   checked={!!alertEngine.enabled}
@@ -1007,6 +1024,39 @@ export default function App() {
                   ))}
                 </select>
               </label>
+              <div className="seg engine-mode">
+                <button
+                  className={`seg-btn ${alertEngine.mode !== "auto" ? "active" : ""}`}
+                  disabled={!alertEngine.enabled}
+                  onClick={() => onSetEngineMode("review")}
+                  title="Queue setups for you to Approve / Deny"
+                >
+                  Review
+                </button>
+                <button
+                  className={`seg-btn ${alertEngine.mode === "auto" ? "active" : ""}`}
+                  disabled={!alertEngine.enabled}
+                  onClick={() => onSetEngineMode("auto")}
+                  title="Auto-open PAPER positions for qualifying setups (paper only — never a real order)"
+                >
+                  Auto-trade (paper)
+                </button>
+              </div>
+              {alertEngine.mode === "auto" && (
+                <label className="engine-maxpos muted small">
+                  max
+                  <select
+                    value={alertEngine.max_positions}
+                    onChange={(e) => onSetMaxPositions(Number(e.target.value))}
+                    disabled={!alertEngine.enabled}
+                  >
+                    {[3, 5, 8, 10].map((n) => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                  </select>
+                  positions
+                </label>
+              )}
               <span className="muted small engine-status">{engineStatusText(alertEngine)}</span>
             </div>
           )}

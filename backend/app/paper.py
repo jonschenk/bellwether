@@ -110,6 +110,41 @@ def buy(stock: dict) -> dict:
     return account()
 
 
+def auto_execute(results: list[dict], max_positions: int = 5, exclude: set[str] | None = None) -> dict:
+    """Auto-open PAPER positions for the best setups, with guardrails. PAPER-ONLY by construction —
+    this only ever calls the paper buy() path; it has no route to a real broker. Used by the alert
+    engine's auto-trade mode. Guardrails: cap concurrent positions, skip names already held / in
+    `exclude` / flagged for imminent earnings / unsizable. Returns what it bought + why it skipped."""
+    exclude = exclude or set()
+    held = {p["ticker"] for p in account().get("positions", [])}
+    open_count = len(held)
+    bought: list[str] = []
+    skipped: list[dict] = []
+
+    for r in sorted(results, key=lambda x: x.get("setup_score", 0), reverse=True):
+        ticker = r["ticker"]
+        if open_count >= max_positions:
+            skipped.append({"ticker": ticker, "reason": "max positions reached"})
+            continue
+        if ticker in held or ticker in exclude:
+            continue  # already held or already acted on today
+        if r.get("earnings_soon"):
+            skipped.append({"ticker": ticker, "reason": f"earnings in {r.get('days_to_earnings')}d"})
+            continue
+        if not (r.get("plan") or {}).get("shares"):
+            skipped.append({"ticker": ticker, "reason": "not sizable"})
+            continue
+        res = buy(r)
+        if res.get("error"):
+            skipped.append({"ticker": ticker, "reason": res["error"]})
+            continue
+        bought.append(ticker)
+        held.add(ticker)
+        open_count += 1
+
+    return {"bought": bought, "skipped": skipped, "account": account()}
+
+
 def close(trade_id: str, exit_price: float | None = None, reason: str = "manual") -> dict:
     """Close an open paper position at exit_price (default: current live price)."""
     acct = _load()
