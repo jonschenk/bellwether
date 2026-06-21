@@ -476,9 +476,13 @@ async def _shutdown() -> None:
         _alert_task.cancel()
 
 
-# Serve the built frontend (repo/frontend/dist) so the backend hosts the whole app — browse to the
-# server's address and you get the UI + API same-origin (no per-device URL config). Mounted LAST so
-# the /api/* routes above take precedence; only present when dist/ has been built (e.g. on the Pi).
-_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+# Static apps the backend serves (so the Pi hosts everything, same-origin — no per-device URL config).
+# Mounted AFTER the /api/* routes so those take precedence; more-specific /app before the "/" catch-all.
+# `viewer/` is the read-only monitor companion (mobile-first; "Add to Home Screen" on iOS).
+_REPO = Path(__file__).resolve().parents[2]
+_VIEWER = _REPO / "viewer"
+if _VIEWER.is_dir():
+    app.mount("/app", StaticFiles(directory=_VIEWER, html=True), name="viewer")
+_DIST = _REPO / "frontend" / "dist"
 if _DIST.is_dir():
     app.mount("/", StaticFiles(directory=_DIST, html=True), name="frontend")
