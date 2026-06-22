@@ -45,6 +45,7 @@ backend/paper_account.json
 backend/.backtest_cache/
 proposals.json
 alert_engine.json
+events.jsonl
 earnings_cache.json
 equity_log.json
 analysis/

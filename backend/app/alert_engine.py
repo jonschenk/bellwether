@@ -27,18 +27,27 @@ _ET = ZoneInfo("America/New_York")
 DEFAULTS = {
     "enabled": False,
     "interval_minutes": 30,
-    "mode": "review",        # "review" = fill the queue for approval; "auto" = auto-open PAPER positions
-    "max_positions": 5,      # auto mode: cap on concurrent open paper positions
-    "open_buffer_min": 30,   # don't act until this many minutes after the 9:30 ET open (skip the volatile open)
-    "ai_picks": True,        # auto mode: run Claude over the mechanical finalists, trade only its "Take" picks (always on — the point is AI-informed picks)
+    # "review" = fill the queue for approval (intraday); "auto" = auto-open PAPER positions (intraday);
+    # "nightly" = the validated model: build tomorrow's tickets after the close, the human reviews
+    # overnight, and the approved ones are re-checked and executed at the next open.
+    "mode": "nightly",
+    "max_positions": 5,      # cap on concurrent open paper positions
+    "open_buffer_min": 30,   # intraday modes: don't act until this many min after the 9:30 ET open
+    "ai_picks": True,        # run Claude over the mechanical finalists, trade only its "Take" picks (always on)
     "last_run": None,        # ISO timestamp of the last completed run
-    "last_status": "idle",   # idle | watching | warming-up | market-closed | bear-cash | auto-traded | error
+    "last_status": "idle",   # idle | watching | warming-up | market-closed | bear-cash | auto-traded | built | executed | error
     "last_regime": None,
     "last_strategy": None,
     "last_new_count": 0,
     "alerted": [],           # tickers already alerted today (dedup)
     "alerted_date": None,    # ET date the alerted list belongs to
+    "nightly_build_day": None,  # ET date the evening build last ran (once-per-day dedup)
+    "nightly_exec_day": None,   # ET date the morning execute last ran (once-per-day dedup)
 }
+
+# Nightly morning execute fires this many minutes after the 9:30 open — just long enough for the
+# opening prints to settle into a usable quote, while still entering at "the open" (backtest-faithful).
+NIGHTLY_EXEC_BUFFER_MIN = 2
 
 
 def _load() -> dict:
@@ -86,7 +95,7 @@ def configure(enabled: bool | None = None, interval_minutes: int | None = None,
         d["last_status"] = "watching" if enabled else "idle"
     if interval_minutes is not None:
         d["interval_minutes"] = max(5, min(int(interval_minutes), 240))
-    if mode in ("review", "auto"):
+    if mode in ("review", "auto", "nightly"):
         d["mode"] = mode
     if max_positions is not None:
         d["max_positions"] = max(1, min(int(max_positions), 50))
@@ -110,6 +119,50 @@ def in_open_warmup(now: dt.datetime | None = None) -> bool:
 
 def auto_mode() -> bool:
     return _load().get("mode") == "auto"
+
+
+def mode() -> str:
+    return _load().get("mode", "review")
+
+
+def next_session_date(now: dt.datetime | None = None) -> str:
+    """The next trading session's ET date (skips weekends; ignores holidays, same harmless caveat
+    as market_open). Used by the evening build to tag tonight's tickets for tomorrow's open."""
+    now = now or _now_et()
+    d = now.date() + dt.timedelta(days=1)
+    while d.weekday() >= 5:  # roll Sat/Sun forward to Monday
+        d += dt.timedelta(days=1)
+    return d.isoformat()
+
+
+def nightly_build_due(now: dt.datetime | None = None) -> bool:
+    """Evening build fires once per weekday after the close (>=16:00 ET), if it hasn't run today."""
+    now = now or _now_et()
+    if now.weekday() >= 5 or now.time() < dt.time(16, 0):
+        return False
+    return _load().get("nightly_build_day") != now.date().isoformat()
+
+
+def nightly_exec_due(now: dt.datetime | None = None) -> bool:
+    """Morning execute fires once per weekday shortly after the open, if it hasn't run today."""
+    now = now or _now_et()
+    if not market_open(now):
+        return False
+    if minutes_since_open(now) < NIGHTLY_EXEC_BUFFER_MIN:
+        return False
+    return _load().get("nightly_exec_day") != now.date().isoformat()
+
+
+def mark_nightly_build() -> None:
+    d = _load()
+    d["nightly_build_day"] = _now_et().date().isoformat()
+    _save(d)
+
+
+def mark_nightly_exec() -> None:
+    d = _load()
+    d["nightly_exec_day"] = _now_et().date().isoformat()
+    _save(d)
 
 
 def due(now: dt.datetime | None = None) -> bool:

@@ -28,11 +28,12 @@ from . import notify
 from . import equity_log
 from . import router
 from . import risk
+from . import eventlog
 from . import daily_notes
 from .live import live
 from .scanner import refresh_results, scan_market
 from .trade_case import trade_case
-from .recommend import recommend
+from .recommend import recommend, recheck
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -404,9 +405,32 @@ async def queue_deny(req: QueueDecisionRequest) -> dict:
     return review_queue.deny(req.id, req.reason)
 
 
+class QueueDecideRequest(BaseModel):
+    id: str
+    decision: str  # "approve" | "deny"
+    reason: str = ""
+
+
+@app.post("/api/queue/decide")
+async def queue_decide(req: QueueDecideRequest) -> dict:
+    """Nightly-model review: record the human's overnight Approve/Deny WITHOUT executing. Approved
+    tickets are re-checked and traded at the next open; denied ones are logged for grading."""
+    res = review_queue.decide(req.id, req.decision, req.reason)
+    if not res.get("error"):
+        eventlog.log_event("review", f"human {req.decision}d {req.id}", decision=req.decision, reason=req.reason)
+    return res
+
+
 @app.post("/api/queue/clear")
 async def queue_clear() -> dict:
     return review_queue.clear()
+
+
+@app.get("/api/events")
+async def events(day: str | None = None, n: int = 200) -> dict:
+    """The engine's chronological audit trail — every move it made. `day` (YYYY-MM-DD ET) returns
+    that day's events oldest-first; otherwise the most recent `n` events newest-first."""
+    return {"events": eventlog.for_day(day) if day else eventlog.tail(n)}
 
 
 # ---- alert engine (phase 1): auto-scan on a schedule + auto-fill the review queue ----
@@ -506,19 +530,160 @@ async def _alert_cycle() -> None:
                         title=f"Alerts · {regime} → {strat}", tags="bell")
 
 
+async def _nightly_build() -> None:
+    """Evening (post-close): scan settled daily bars, run the bull/bear debate, and PROPOSE
+    tomorrow's tickets for the human to review overnight. Proposes nothing in a bear regime (the
+    cash kill-switch). This is the validated cadence — signal on the close, enter at the next open."""
+    if scan_state["status"] in ("running", "analyzing"):
+        return  # don't collide with a manual scan; retry next tick
+    trading_day = alert_engine.next_session_date()
+    reg = await asyncio.to_thread(regime_mod.current_regime)
+    if not reg.get("available"):
+        eventlog.log_event("error", "evening build: regime unavailable — retrying next tick")
+        return  # don't mark the build done; try again shortly
+    regime = reg["regime"]
+    strat, params = router.for_regime(regime)
+    eventlog.log_event("regime", f"evening: {regime} → {strat}", regime=regime, strategy=strat)
+    if strat == "cash":  # bear -> sit out (kill-switch)
+        alert_engine.record("bear-cash", regime=regime, strategy="cash")
+        alert_engine.mark_nightly_build()
+        eventlog.log_event("propose", f"bear regime — no setups for {trading_day}", trading_day=trading_day)
+        notify.send(f"Bear regime — cash, no setups for {trading_day}.", title="Nightly · cash", tags="moneybag")
+        return
+    # Fractional-Kelly sizing from this regime's measured edge (no-op until ~20 closed trades).
+    base_risk = load_settings().risk_pct
+    perf = journal.summary_by_variation().get(f"router-{strat}+ai")
+    kelly_pct, kelly_note = risk.kelly_risk_pct(base_risk, perf)
+    if kelly_pct != base_risk:
+        eventlog.log_event("sizing", f"Kelly risk_pct {base_risk}→{kelly_pct} ({kelly_note})", risk_pct=kelly_pct)
+    params = {**params, "risk_pct": kelly_pct}
+    await _run_scan(force_fresh=True, scan_strategy=strat, params_override=params)  # fresh = the day's final bars
+    rows = scan_state.get("results") or []
+    eventlog.log_event("scan", f"evening scan: {len(rows)} setups cleared ({strat})", count=len(rows), strategy=strat)
+
+    proposed: list[str] = []
+    max_pos = alert_engine.state().get("max_positions", 5)
+    if rows:
+        positions = [{"ticker": p["ticker"], "shares": p["shares"]} for p in paper.account().get("positions", [])]
+        rec = await recommend(rows, load_settings(), positions)  # bull/bear debate
+        if not rec.get("error"):
+            picks = {p["ticker"]: p for p in rec.get("picks", [])}
+            for r in rows:
+                r["recommendation"] = picks.get(r["ticker"])
+            picked = [r for r in rows if r["ticker"] in picks]
+            res = review_queue.build(picked, regime, strat, top_n=max_pos, trading_day=trading_day)
+            proposed = res.get("added_tickers", [])
+            eventlog.log_event("propose", f"AI debate picked {len(picked)} of {len(rows)}",
+                               picks={t: (p.get("call"), p.get("conviction")) for t, p in picks.items()})
+        else:
+            eventlog.log_event("error", f"AI debate unavailable ({rec.get('summary')}) — proposing top mechanical setups")
+            res = review_queue.build(rows, regime, strat, top_n=max_pos, trading_day=trading_day)
+            proposed = res.get("added_tickers", [])
+    alert_engine.record("built", regime=regime, strategy=strat, new_tickers=proposed)
+    alert_engine.mark_nightly_build()
+    eventlog.log_event("propose", f"proposed {len(proposed)} ticket(s) for {trading_day}: {', '.join(proposed) or 'none'}",
+                       trading_day=trading_day, tickers=proposed)
+    if proposed:
+        notify.send(f"{len(proposed)} setup{'s' if len(proposed) != 1 else ''} for {trading_day}: {', '.join(proposed)}. Review tonight.",
+                    title=f"Nightly · {regime} → {strat}", tags="memo")
+    else:
+        notify.send(f"No setups cleared for {trading_day}.", title="Nightly · nothing tonight", tags="zzz")
+
+
+async def _nightly_morning() -> None:
+    """Morning (just after the open): re-check last night's APPROVED tickets against the actual
+    opening price and execute the ones that still look valid. A mechanical gate (gapped through the
+    stop / already past target / no quote) plus a Claude gut-check guard against overnight tanks.
+    Un-reviewed tickets expire (safe default: don't trade what the human didn't approve)."""
+    if scan_state["status"] in ("running", "analyzing"):
+        return
+    today = alert_engine._now_et().date().isoformat()
+    approved = review_queue.approved_for_execution(today)
+    expired = review_queue.expire_pending(today)
+    if expired:
+        eventlog.log_event("review", f"expired {len(expired)} un-reviewed ticket(s): {', '.join(expired)}", tickers=expired)
+    if not approved:
+        alert_engine.record("executed", new_tickers=[])
+        alert_engine.mark_nightly_exec()
+        eventlog.log_event("execute", "morning: no approved tickets to execute")
+        return
+
+    tickers = [p["ticker"] for p in approved]
+    prices = await asyncio.to_thread(paper._quote, tickers)
+    payload = []
+    for p in approved:
+        plan = p.get("plan") or {}
+        cur, entry = prices.get(p["ticker"]), plan.get("entry")
+        payload.append({"ticker": p["ticker"], "strategy": p.get("strategy"), "entry": entry,
+                        "stop": plan.get("stop"), "target": plan.get("target"), "current": cur,
+                        "move_pct": round((cur / entry - 1) * 100, 2) if (cur and entry) else None})
+    rc = await recheck(payload)  # one Claude call: proceed/stand-down per name
+    verdicts = {v["ticker"]: v for v in rc.get("verdicts", [])} if not rc.get("error") else {}
+    if rc.get("error"):
+        eventlog.log_event("error", f"AI re-check unavailable ({rc.get('summary')}) — mechanical gate only")
+
+    bought, skipped, vid = [], [], None
+    for p in approved:
+        plan = p.get("plan") or {}
+        cur, stop, target = prices.get(p["ticker"]), plan.get("stop"), plan.get("target")
+        if not cur:
+            review_queue.mark(p["id"], "skipped", "no opening quote")
+            skipped.append(p["ticker"]); eventlog.log_event("skip", f"{p['ticker']}: no opening quote"); continue
+        if stop and cur <= stop:
+            review_queue.mark(p["id"], "skipped", f"gapped through stop (${cur} ≤ ${stop})")
+            skipped.append(p["ticker"]); eventlog.log_event("recheck", f"{p['ticker']} BROKEN — gapped through stop", current=cur, stop=stop); continue
+        if target and cur >= target:
+            review_queue.mark(p["id"], "skipped", f"already at/above target (${cur} ≥ ${target})")
+            skipped.append(p["ticker"]); eventlog.log_event("recheck", f"{p['ticker']} no R:R left — at/above target", current=cur, target=target); continue
+        v = verdicts.get(p["ticker"])
+        if v and not v.get("proceed"):
+            review_queue.mark(p["id"], "skipped", f"AI stand-down: {v.get('reason')}")
+            skipped.append(p["ticker"]); eventlog.log_event("recheck", f"{p['ticker']} AI stand-down: {v.get('reason')}"); continue
+        # Execute: market buy at the open. Tag with the router leg + the regime's Kelly params.
+        strat = p.get("strategy") or "leader_pullback"
+        vid = f"router-{strat}+ai"
+        params = {**router.for_regime(p.get("regime"))[1], "risk_pct": plan.get("risk_pct")}
+        res = await asyncio.to_thread(paper.buy, p["stock"], vid, params)
+        if res.get("error"):
+            review_queue.mark(p["id"], "skipped", f"execution failed: {res['error']}")
+            skipped.append(p["ticker"]); eventlog.log_event("skip", f"{p['ticker']} execution failed: {res['error']}"); continue
+        review_queue.mark(p["id"], "executed", f"bought at ~${cur}")
+        bought.append(p["ticker"])
+        eventlog.log_event("execute", f"bought {p['ticker']} at ~${cur}", ticker=p["ticker"], price=cur,
+                           reason=(v or {}).get("reason"))
+
+    alert_engine.record("executed", strategy=(approved[0].get("strategy") if approved else None), new_tickers=bought)
+    alert_engine.mark_nightly_exec()
+    eventlog.log_event("execute", f"morning done — bought {len(bought)}, skipped {len(skipped)}",
+                       bought=bought, skipped=skipped)
+    msg = f"Bought {len(bought)}: {', '.join(bought)}." if bought else "Bought nothing this morning."
+    if skipped:
+        msg += f" Skipped {len(skipped)}: {', '.join(skipped)}."
+    notify.send(msg, title="Nightly · morning execute", tags="robot")
+
+
 async def _alert_loop() -> None:
-    """Background scheduler: when the engine is enabled and a cycle is due, run one. Opt-in;
-    nothing it does opens a trade — it only fills the review queue for the human to act on."""
+    """Background scheduler. In NIGHTLY mode (the validated default) it runs the evening build once
+    after the close and the morning execute once after the open. The intraday review/auto modes run
+    on the interval instead. Opt-in; the human approves overnight and nothing executes without it."""
     while True:
         try:
-            if alert_engine.enabled() and alert_engine.due():
-                await _alert_cycle()
+            if alert_engine.enabled():
+                m = alert_engine.mode()
+                if m == "nightly":
+                    if alert_engine.nightly_build_due():
+                        await _nightly_build()
+                    elif alert_engine.nightly_exec_due():
+                        await _nightly_morning()
+                elif alert_engine.due():
+                    await _alert_cycle()
             # Daily equity-curve snapshot + the observational daily note (both self-dedup per ET day,
             # run post-close regardless of the engine, so the forward record keeps accruing).
             await asyncio.to_thread(equity_log.maybe_record_eod)
             await daily_notes.maybe_generate_eod()
         except Exception:
             log.exception("alert engine cycle failed")
+            eventlog.log_event("error", "alert loop tick failed (see server log)")
         await asyncio.sleep(ALERT_TICK_SECONDS)
 
 

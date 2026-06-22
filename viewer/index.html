@@ -52,6 +52,25 @@
   .empty { color: var(--muted); font-size: 13px; padding: 4px 2px; }
   .er { color: var(--yellow); font-size: 11px; font-weight: 600; }
   .feed span { font-size: 12px; }
+  /* nightly review proposals */
+  .prop { border: 1px solid var(--border); border-radius: 10px; padding: 10px 11px; margin-bottom: 9px; background: var(--raised); }
+  .prop .hd { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 6px; }
+  .prop .tk { font-weight: 700; font-size: 15px; }
+  .call { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px; }
+  .call.Take { color: var(--green); background: rgba(74,222,128,.12); }
+  .call.Watch { color: var(--yellow); background: rgba(250,204,21,.12); }
+  .ladder { font-size: 12px; margin-bottom: 5px; }
+  .case { font-size: 12px; line-height: 1.45; margin: 3px 0; }
+  .case .lbl { font-weight: 700; }
+  .case.bull .lbl { color: var(--green); } .case.bear .lbl { color: var(--red); }
+  .btns { display: flex; gap: 8px; margin-top: 9px; }
+  .btns button { flex: 1; border-radius: 8px; padding: 9px; font-size: 13px; font-weight: 700; cursor: pointer; border: 1px solid; }
+  .approve { background: rgba(74,222,128,.12); border-color: var(--green); color: var(--green); }
+  .skip { background: rgba(248,113,113,.1); border-color: var(--red); color: var(--red); }
+  .evt { display: flex; gap: 8px; font-size: 11.5px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .evt:last-child { border-bottom: none; }
+  .evt .tm { color: var(--muted); white-space: nowrap; }
+  .evt .cat { color: var(--accent2); font-weight: 700; text-transform: uppercase; font-size: 9.5px; min-width: 52px; }
   .note-body { font-size: 13.5px; line-height: 1.55; color: var(--text); }
   .note-body strong { color: var(--text); }
   .updated { text-align: center; color: var(--muted); font-size: 11px; margin-top: 4px; }
@@ -100,24 +119,25 @@ let engineState = null;
 
 async function load() {
   try {
-    const [regime, engine, acct, journal, queue, notes] = await Promise.all([
+    const [regime, engine, acct, journal, queue, notes, events] = await Promise.all([
       api("/api/regime").catch(()=>({available:false})),
       api("/api/alerts/engine").catch(()=>null),
       api("/api/paper/account").catch(()=>null),
       api("/api/journal").catch(()=>({trades:[],summary:{}})),
       api("/api/queue").catch(()=>({pending:[],decided:[]})),
       api("/api/daily-notes").catch(()=>({notes:[]})),
+      api("/api/events?n=16").catch(()=>({events:[]})),
     ]);
     engineState = engine;
     document.getElementById("offline").style.display = "none";
-    render(regime, engine, acct, journal, queue, notes);
+    render(regime, engine, acct, journal, queue, notes, events);
     document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) {
     document.getElementById("offline").style.display = "block";
   }
 }
 
-function render(regime, engine, acct, journal, queue, notes) {
+function render(regime, engine, acct, journal, queue, notes, events) {
   // regime pill
   const rg = document.getElementById("regime");
   if (regime && regime.available) rg.innerHTML = `<span class="pill ${regime.regime}">${regime.label} → ${regime.strategy}</span>`;
@@ -128,8 +148,8 @@ function render(regime, engine, acct, journal, queue, notes) {
   // engine status
   if (engine) {
     const on = engine.enabled;
-    const mode = engine.mode === "auto" ? "Auto-trade (paper)" : "Review";
-    const statusMap = { watching:"Watching", "auto-traded":"Auto-trading", "warming-up":"Open settling", "market-closed":"Market closed", "bear-cash":"Bear — holding cash", error:"Reconnecting", idle:"Idle" };
+    const mode = { auto:"Auto-trade (paper)", review:"Review", nightly:"Nightly" }[engine.mode] || engine.mode;
+    const statusMap = { watching:"Watching", "auto-traded":"Auto-trading", built:"Setups proposed", executed:"Morning done", "warming-up":"Open settling", "market-closed":"Market closed", "bear-cash":"Bear — holding cash", error:"Reconnecting", idle:"Idle" };
     const status = on ? (statusMap[engine.last_status] || "On") : "Off";
     const last = engine.last_run ? new Date(engine.last_run).toLocaleTimeString() : "—";
     html += `<div class="card"><div class="spread"><h2 style="margin:0">Alert engine</h2>
@@ -177,25 +197,38 @@ function render(regime, engine, acct, journal, queue, notes) {
     html += `</div>`;
   }
 
-  // alerts feed (queue)
+  // nightly review queue — the human approves/skips tomorrow's proposed tickets
   if (queue) {
     const pend = queue.pending || [];
-    html += `<div class="card"><h2>Alerts</h2>`;
+    const isNightly = engine && engine.mode === "nightly";
+    html += `<div class="card"><h2>${isNightly?"Tonight’s review":"Alerts"}${pend.length?` · ${pend.length}`:""}</h2>`;
     if (pend.length) {
-      html += `<table><thead><tr><th>Ticker</th><th>Strategy</th><th>Entry → Stop → Target</th></tr></thead><tbody>`;
       for (const p of pend) {
         const pl = p.plan||{};
-        html += `<tr><td class="t">${p.ticker}${p.earnings_soon?` <span class="er">⚠${p.days_to_earnings}d</span>`:""}</td>
-          <td><span class="strat ${p.strategy==='mean_reversion'?'meanrev':'leader'}">${p.strategy==='mean_reversion'?'Mean-rev':'Leader'}</span></td>
-          <td class="small">$${fmt(pl.entry)} → <span class="neg">$${fmt(pl.stop)}</span> → <span class="pos">$${fmt(pl.target)}</span></td></tr>`;
+        html += `<div class="prop">
+          <div class="hd"><span class="tk">${p.ticker}</span>
+            <span class="strat ${p.strategy==='mean_reversion'?'meanrev':'leader'}">${p.strategy==='mean_reversion'?'Mean-rev':'Leader'}</span>
+            ${p.call?`<span class="call ${p.call}">${p.call}${p.conviction?' · '+p.conviction:''}</span>`:""}
+            ${p.earnings_soon?`<span class="er">⚠${p.days_to_earnings}d</span>`:""}
+            ${p.trading_day?`<span class="muted small" style="margin-left:auto">for ${p.trading_day}</span>`:""}
+          </div>
+          <div class="ladder">$${fmt(pl.entry)} → <span class="neg">$${fmt(pl.stop)}</span> → <span class="pos">$${fmt(pl.target)}</span>
+            ${pl.shares?`<span class="muted">· ${pl.shares} sh${pl.reward_risk?` · ${pl.reward_risk}:1`:""}</span>`:""}</div>
+          ${p.bull?`<div class="case bull"><span class="lbl">Bull:</span> ${p.bull}</div>`:""}
+          ${p.bear?`<div class="case bear"><span class="lbl">Bear:</span> ${p.bear}</div>`:""}
+          ${p.reason?`<div class="case muted"><span class="lbl">Verdict:</span> ${p.reason}</div>`:""}
+          <div class="btns">
+            <button class="approve" onclick="decide('${p.id}','approve','${p.ticker}')">✓ Approve</button>
+            <button class="skip" onclick="decide('${p.id}','deny','${p.ticker}')">✕ Skip</button>
+          </div></div>`;
       }
-      html += `</tbody></table>`;
     } else {
-      html += `<div class="empty">No pending alerts.</div>`;
+      html += `<div class="empty">${isNightly?"Nothing to review — the engine proposes after the close.":"No pending alerts."}</div>`;
     }
     if (queue.decided && queue.decided.length) {
-      html += `<div class="feed small" style="margin-top:9px"><span class="muted">Recent: </span>` +
-        queue.decided.slice(0,8).map(d=>`<span class="${d.status==='approved'?'pos':'neg'}">${d.ticker} ${d.status==='approved'?'✓':'✕'} </span>`).join("") + `</div>`;
+      const mk = { executed:["✓ bought","pos"], approved:["✓ approved","pos"], skipped:["skipped","muted"], denied:["✕ skipped","neg"], expired:["expired","muted"] };
+      html += `<div class="feed small" style="margin-top:6px"><span class="muted">Recent: </span>` +
+        queue.decided.slice(0,10).map(d=>{const m=mk[d.status]||[d.status,"muted"]; return `<span class="${m[1]}">${d.ticker} ${m[0]}</span>`;}).join(" · ") + `</div>`;
     }
     html += `</div>`;
   }
@@ -239,10 +272,28 @@ function render(regime, engine, acct, journal, queue, notes) {
     html += `<div class="card"><h2>Daily note · ${latest.date}</h2><div class="note-body">${md}</div></div>`;
   }
 
+  // engine activity — the audit trail of every move (regime, scan, propose, review, execute, skip)
+  if (events && events.events && events.events.length) {
+    html += `<div class="card"><h2>Engine activity</h2>`;
+    for (const e of events.events.slice(0,16)) {
+      const tm = (e.et||"").slice(11,16);
+      html += `<div class="evt"><span class="tm">${tm}</span><span class="cat">${e.category}</span><span>${e.message}</span></div>`;
+    }
+    html += `</div>`;
+  }
+
   document.getElementById("content").innerHTML = html;
 }
 
-// ---- the only actions (defensive) ----
+// ---- nightly review: the human's load-bearing Approve/Skip (marks intent; the morning re-check executes) ----
+async function decide(id, decision, ticker) {
+  const verb = decision === "approve" ? "Approve" : "Skip";
+  if (!confirm(`${verb} ${ticker} for the next open?`)) return;
+  try { await api("/api/queue/decide", {method:"POST", body: JSON.stringify({id, decision})}); load(); }
+  catch(e){ alert("Failed: " + e.message); }
+}
+
+// ---- the defensive actions ----
 async function closePos(id, ticker) {
   if (!confirm(`Close ${ticker} now at the live price?`)) return;
   try { await api("/api/paper/close", {method:"POST", body: JSON.stringify({trade_id:id})}); load(); }
