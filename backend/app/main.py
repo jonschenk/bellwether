@@ -401,6 +401,7 @@ class AlertEngineRequest(BaseModel):
     interval_minutes: int | None = None
     mode: str | None = None
     max_positions: int | None = None
+    open_buffer_min: int | None = None
 
 
 @app.get("/api/alerts/engine")
@@ -410,7 +411,7 @@ async def alert_engine_state() -> dict:
 
 @app.post("/api/alerts/engine")
 async def alert_engine_configure(req: AlertEngineRequest) -> dict:
-    return alert_engine.configure(req.enabled, req.interval_minutes, req.mode, req.max_positions)
+    return alert_engine.configure(req.enabled, req.interval_minutes, req.mode, req.max_positions, req.open_buffer_min)
 
 
 ALERT_TICK_SECONDS = 60  # how often to check whether a cycle is due
@@ -423,6 +424,9 @@ async def _alert_cycle() -> None:
         return  # don't collide with a user-initiated scan; retry next tick
     if not alert_engine.market_open():
         alert_engine.mark("market-closed")
+        return
+    if alert_engine.in_open_warmup():
+        alert_engine.mark("warming-up")  # let the volatile open settle before acting
         return
     reg = await asyncio.to_thread(regime_mod.current_regime)
     if not reg.get("available"):

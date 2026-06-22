@@ -86,6 +86,8 @@ function engineStatusText(e) {
       return `Watching · ${e.market_open ? "market open" : "market closed"}${e.last_regime ? ` · ${e.last_regime} → ${strat}` : ""}${ran}`;
     case "auto-traded":
       return `Auto-trading (paper) · ${e.last_regime} → ${strat} · opened ${e.last_new_count} last run${ran}`;
+    case "warming-up":
+      return "On · letting the open settle before acting (open-buffer window)";
     case "market-closed":
       return `On · waiting for the market to open (9:30–16:00 ET, Mon–Fri)${auto ? " · will auto-trade (paper)" : ""}`;
     case "bear-cash":

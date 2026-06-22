@@ -126,7 +126,7 @@ function render(regime, engine, acct, journal, queue) {
   if (engine) {
     const on = engine.enabled;
     const mode = engine.mode === "auto" ? "Auto-trade (paper)" : "Review";
-    const statusMap = { watching:"Watching", "auto-traded":"Auto-trading", "market-closed":"Market closed", "bear-cash":"Bear — holding cash", error:"Reconnecting", idle:"Idle" };
+    const statusMap = { watching:"Watching", "auto-traded":"Auto-trading", "warming-up":"Open settling", "market-closed":"Market closed", "bear-cash":"Bear — holding cash", error:"Reconnecting", idle:"Idle" };
     const status = on ? (statusMap[engine.last_status] || "On") : "Off";
     const last = engine.last_run ? new Date(engine.last_run).toLocaleTimeString() : "—";
     html += `<div class="card"><div class="spread"><h2 style="margin:0">Alert engine</h2>

@@ -29,8 +29,9 @@ DEFAULTS = {
     "interval_minutes": 30,
     "mode": "review",        # "review" = fill the queue for approval; "auto" = auto-open PAPER positions
     "max_positions": 5,      # auto mode: cap on concurrent open paper positions
+    "open_buffer_min": 30,   # don't act until this many minutes after the 9:30 ET open (skip the volatile open)
     "last_run": None,        # ISO timestamp of the last completed run
-    "last_status": "idle",   # idle | watching | scanning | market-closed | bear-cash | error
+    "last_status": "idle",   # idle | watching | warming-up | market-closed | bear-cash | auto-traded | error
     "last_regime": None,
     "last_strategy": None,
     "last_new_count": 0,
@@ -74,7 +75,8 @@ def state() -> dict:
 
 
 def configure(enabled: bool | None = None, interval_minutes: int | None = None,
-              mode: str | None = None, max_positions: int | None = None) -> dict:
+              mode: str | None = None, max_positions: int | None = None,
+              open_buffer_min: int | None = None) -> dict:
     d = _load()
     if enabled is not None:
         d["enabled"] = bool(enabled)
@@ -85,8 +87,22 @@ def configure(enabled: bool | None = None, interval_minutes: int | None = None,
         d["mode"] = mode
     if max_positions is not None:
         d["max_positions"] = max(1, min(int(max_positions), 50))
+    if open_buffer_min is not None:
+        d["open_buffer_min"] = max(0, min(int(open_buffer_min), 120))
     _save(d)
     return state()
+
+
+def minutes_since_open(now: dt.datetime | None = None) -> int:
+    """Minutes since the 9:30 ET open today (negative before the open)."""
+    now = now or _now_et()
+    return now.hour * 60 + now.minute - (9 * 60 + 30)
+
+
+def in_open_warmup(now: dt.datetime | None = None) -> bool:
+    """True during the post-open warmup window (skip the volatile open). 0 buffer disables it."""
+    buf = _load().get("open_buffer_min", 0)
+    return buf > 0 and 0 <= minutes_since_open(now) < buf
 
 
 def auto_mode() -> bool:
