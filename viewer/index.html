@@ -52,6 +52,8 @@
   .empty { color: var(--muted); font-size: 13px; padding: 4px 2px; }
   .er { color: var(--yellow); font-size: 11px; font-weight: 600; }
   .feed span { font-size: 12px; }
+  .note-body { font-size: 13.5px; line-height: 1.55; color: var(--text); }
+  .note-body strong { color: var(--text); }
   .updated { text-align: center; color: var(--muted); font-size: 11px; margin-top: 4px; }
   .offline { background: rgba(248,113,113,.1); border: 1px solid rgba(248,113,113,.4); color: var(--red); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; }
   /* settings drawer */
@@ -98,23 +100,24 @@ let engineState = null;
 
 async function load() {
   try {
-    const [regime, engine, acct, journal, queue] = await Promise.all([
+    const [regime, engine, acct, journal, queue, notes] = await Promise.all([
       api("/api/regime").catch(()=>({available:false})),
       api("/api/alerts/engine").catch(()=>null),
       api("/api/paper/account").catch(()=>null),
       api("/api/journal").catch(()=>({trades:[],summary:{}})),
       api("/api/queue").catch(()=>({pending:[],decided:[]})),
+      api("/api/daily-notes").catch(()=>({notes:[]})),
     ]);
     engineState = engine;
     document.getElementById("offline").style.display = "none";
-    render(regime, engine, acct, journal, queue);
+    render(regime, engine, acct, journal, queue, notes);
     document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) {
     document.getElementById("offline").style.display = "block";
   }
 }
 
-function render(regime, engine, acct, journal, queue) {
+function render(regime, engine, acct, journal, queue, notes) {
   // regime pill
   const rg = document.getElementById("regime");
   if (regime && regime.available) rg.innerHTML = `<span class="pill ${regime.regime}">${regime.label} → ${regime.strategy}</span>`;
@@ -222,6 +225,18 @@ function render(regime, engine, acct, journal, queue) {
       html += `<div class="empty">No trades logged yet.</div>`;
     }
     html += `</div>`;
+  }
+
+  // daily note (the AI's observational read of the latest trading day)
+  const latest = notes && notes.notes && notes.notes[0];
+  if (latest) {
+    const md = latest.content
+      .replace(/^# .*$/m, "").replace(/^---+$/gm, "")
+      .replace(/^#{1,6}\s*(.*)$/gm, "<strong>$1</strong>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/_([^_]+)_/g, "<span class='muted'>$1</span>")
+      .replace(/^[-*]\s+/gm, "• ").trim().replace(/\n/g, "<br>");
+    html += `<div class="card"><h2>Daily note · ${latest.date}</h2><div class="note-body">${md}</div></div>`;
   }
 
   document.getElementById("content").innerHTML = html;

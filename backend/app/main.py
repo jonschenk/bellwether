@@ -27,6 +27,7 @@ from . import alert_engine
 from . import notify
 from . import equity_log
 from . import router
+from . import daily_notes
 from .live import live
 from .scanner import refresh_results, scan_market
 from .trade_case import trade_case
@@ -322,6 +323,12 @@ async def equity_log_view() -> dict:
     return {"rows": equity_log.rows()}
 
 
+@app.get("/api/daily-notes")
+async def daily_notes_view() -> dict:
+    """The observational daily journal notes (newest first)."""
+    return {"notes": daily_notes.list_notes()}
+
+
 @app.get("/api/paper/account")
 async def paper_account() -> dict:
     return paper.account()
@@ -474,9 +481,10 @@ async def _alert_loop() -> None:
         try:
             if alert_engine.enabled() and alert_engine.due():
                 await _alert_cycle()
-            # Daily equity-curve snapshot (self-dedups per ET day; runs even when the engine is off,
-            # so the forward equity curve / drawdown / SPY benchmark keep accruing regardless).
+            # Daily equity-curve snapshot + the observational daily note (both self-dedup per ET day,
+            # run post-close regardless of the engine, so the forward record keeps accruing).
             await asyncio.to_thread(equity_log.maybe_record_eod)
+            await daily_notes.maybe_generate_eod()
         except Exception:
             log.exception("alert engine cycle failed")
         await asyncio.sleep(ALERT_TICK_SECONDS)
