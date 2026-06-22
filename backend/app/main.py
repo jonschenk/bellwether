@@ -415,6 +415,7 @@ class AlertEngineRequest(BaseModel):
     mode: str | None = None
     max_positions: int | None = None
     open_buffer_min: int | None = None
+    ai_picks: bool | None = None
 
 
 @app.get("/api/alerts/engine")
@@ -424,7 +425,8 @@ async def alert_engine_state() -> dict:
 
 @app.post("/api/alerts/engine")
 async def alert_engine_configure(req: AlertEngineRequest) -> dict:
-    return alert_engine.configure(req.enabled, req.interval_minutes, req.mode, req.max_positions, req.open_buffer_min)
+    return alert_engine.configure(req.enabled, req.interval_minutes, req.mode, req.max_positions,
+                                  req.open_buffer_min, req.ai_picks)
 
 
 ALERT_TICK_SECONDS = 60  # how often to check whether a cycle is due
@@ -455,15 +457,36 @@ async def _alert_cycle() -> None:
     rows = scan_state.get("results") or []
     exclude = alert_engine.exclude_today()
     if alert_engine.auto_mode():
-        # PAPER-ONLY auto-execute: open positions for the gated setups. Trades are tagged with the
-        # router leg + its validated params so the journal records exactly what ran.
         st = alert_engine.state()
-        res = await asyncio.to_thread(paper.auto_execute, rows, st.get("max_positions", 5), exclude,
-                                      f"router-{strat}", params)
+        max_pos = st.get("max_positions", 5)
+        rows_to_trade, vid = rows, f"router-{strat}"
+        # AI-judged selection: Claude triages the mechanical finalists and we trade only its "Take"
+        # picks; the top finalists it vetoes are logged as passes so we can later grade whether its
+        # judgment actually beat pure mechanical. Falls back to mechanical if the call fails.
+        if st.get("ai_picks") and rows:
+            positions = [{"ticker": p["ticker"], "shares": p["shares"]} for p in paper.account().get("positions", [])]
+            rec = await recommend(rows, load_settings(), positions)
+            if not rec.get("error"):
+                picks = {p["ticker"]: p for p in rec.get("picks", [])}
+                for r in rows:
+                    r["recommendation"] = picks.get(r["ticker"])
+                vid = f"router-{strat}+ai"
+                takes = [r for r in rows if (picks.get(r["ticker"]) or {}).get("call") == "Take"]
+                take_set = {r["ticker"] for r in takes}
+                for r in rows[:max_pos]:  # mechanical top-N Claude vetoed -> log for grading
+                    if r["ticker"] not in take_set and r["ticker"] not in exclude:
+                        pk = picks.get(r["ticker"]) or {}
+                        journal.log_pass(r, vid, decision=pk.get("call") or "Skip",
+                                         notes=(pk.get("reason") or rec.get("skip_note") or "")[:200])
+                rows_to_trade = takes
+            else:
+                log.warning("AI picks unavailable (%s); using mechanical selection", rec.get("summary"))
+        res = await asyncio.to_thread(paper.auto_execute, rows_to_trade, max_pos, exclude, vid, params)
         bought = res.get("bought", [])
         alert_engine.record("auto-traded", regime=regime, strategy=strat, new_tickers=bought)
         if bought:
-            notify.send(f"Opened {len(bought)} paper position{'s' if len(bought) != 1 else ''}: {', '.join(bought)}",
+            judged = " (Claude-picked)" if vid.endswith("+ai") else ""
+            notify.send(f"Opened {len(bought)} paper position{'s' if len(bought) != 1 else ''}{judged}: {', '.join(bought)}",
                         title=f"Auto-traded · {regime} → {strat}", tags="robot")
     else:
         res = review_queue.build(rows, regime, strat, exclude=exclude)
