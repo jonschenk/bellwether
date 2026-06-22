@@ -290,6 +290,7 @@ def _mark_and_bracket(acct: dict, prices: dict[str, float]) -> bool:
     price hits it, and time-stop after max_hold_days — NO fixed target (winners run). With it off:
     the legacy fixed stop+target. Returns True if anything changed."""
     try:
+        from .config import load_settings
         s = load_settings()
         trailing, max_hold = s.trailing_stop, s.max_hold_days
     except Exception:
