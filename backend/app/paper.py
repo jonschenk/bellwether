@@ -107,18 +107,23 @@ def _open_position(acct: dict, stock: dict, fill: float,
         market_regime=_market_regime(),
     )
     acct["cash"] = round(acct["cash"] - cost, 2)
+    stop = plan.get("stop")
     acct["positions"][trade["id"]] = {
         "ticker": stock["ticker"],
         "name": stock.get("name", ""),
         "shares": shares,
         "entry": fill,
-        "stop": plan.get("stop"),
+        "stop": stop,                 # the INITIAL stop — the risk denominator + display (unchanged by the trail)
         "target": plan.get("target"),
         "opened_at": trade["opened_at"],
         "decision": trade.get("decision"),
         "current": fill,
         "mae": fill,  # lowest price seen while held
         "mfe": fill,  # highest price seen while held
+        # trailing-stop state: the trail rides `init_stop_dist` below the high-water mark, ratcheting
+        # up only. Distance == the initial stop distance (the validated trail reused the stop multiple).
+        "init_stop_dist": round(fill - stop, 2) if stop else None,
+        "trail_stop": stop,           # starts at the initial stop, then ratchets up with the high
     }
     return {"trade": trade}
 
@@ -248,21 +253,47 @@ def close(trade_id: str, exit_price: float | None = None, reason: str = "manual"
         log.exception("journal close failed for %s", trade_id)
     del acct["positions"][trade_id]
     _save(acct)
-    # Push a phone alert when the bracket fired (not for manual closes — you did those yourself).
-    if reason in ("stop", "target") and closed:
+    # Push a phone alert when the engine closed it (not for manual closes — you did those yourself).
+    if reason in ("stop", "target", "trail", "time") and closed:
         r, pnl = closed.get("r_multiple"), closed.get("pnl")
-        emoji = "white_check_mark" if reason == "target" else "octagonal_sign"
+        win = (pnl or 0) >= 0
+        emoji = "white_check_mark" if win else "octagonal_sign"
+        label = {"stop": "stopped out", "target": "hit target", "trail": "trailing stop", "time": "time-stop"}[reason]
         notify.send(
-            f"{pos['ticker']} {reason} — {('+' if (r or 0) >= 0 else '')}{r}R "
-            f"({('+' if (pnl or 0) >= 0 else '−')}${abs(pnl or 0):,.0f})",
-            title=f"Paper {reason} hit", tags=emoji,
-            priority="high" if reason == "stop" else "default",
+            f"{pos['ticker']} {label} — {('+' if (r or 0) >= 0 else '')}{r}R "
+            f"({'+' if win else '−'}${abs(pnl or 0):,.0f})",
+            title=f"Paper · {label}", tags=emoji,
+            priority="high" if not win else "default",
         )
     return account()
 
 
+def _trading_days_held(opened_at: str) -> int:
+    """Weekday count from the open date to today (ET). Approximates the backtest's trading-day
+    max-hold (ignores holidays — harmless, it just trims a hair late)."""
+    try:
+        d0 = dt.date.fromisoformat(opened_at[:10])
+    except (ValueError, TypeError):
+        return 0
+    d1 = alert_engine._now_et().date()
+    days, d = 0, d0
+    while d < d1:
+        d += dt.timedelta(days=1)
+        if d.weekday() < 5:
+            days += 1
+    return days
+
+
 def _mark_and_bracket(acct: dict, prices: dict[str, float]) -> bool:
-    """Update marks + MAE/MFE and fire stop/target. Returns True if anything changed."""
+    """Update marks + MAE/MFE, then run the exit policy. With trailing_stop on (default, the
+    validated exit): ratchet a stop that rides init_stop_dist below the high-water mark, exit when
+    price hits it, and time-stop after max_hold_days — NO fixed target (winners run). With it off:
+    the legacy fixed stop+target. Returns True if anything changed."""
+    try:
+        s = load_settings()
+        trailing, max_hold = s.trailing_stop, s.max_hold_days
+    except Exception:
+        trailing, max_hold = True, 10
     changed = False
     for tid, pos in list(acct["positions"].items()):
         px = prices.get(pos["ticker"])
@@ -272,8 +303,28 @@ def _mark_and_bracket(acct: dict, prices: dict[str, float]) -> bool:
         pos["mae"] = round(min(pos["mae"], px), 2)
         pos["mfe"] = round(max(pos["mfe"], px), 2)
         changed = True
+
+        if trailing and pos.get("init_stop_dist"):
+            # ratchet the trail up to (high-water mark - initial stop distance); never down
+            new_trail = round(pos["mfe"] - pos["init_stop_dist"], 2)
+            if pos.get("trail_stop") is None or new_trail > pos["trail_stop"]:
+                pos["trail_stop"] = new_trail
+            if px <= pos["trail_stop"]:
+                # "stop" if the trail never moved above the initial stop (a loss); else "trail" (locked gain)
+                reason = "stop" if (pos.get("stop") and pos["trail_stop"] <= pos["stop"]) else "trail"
+                _save(acct)
+                close(tid, pos["trail_stop"], reason=reason)
+                acct.update(_load())
+                continue
+            if _trading_days_held(pos["opened_at"]) >= max_hold:
+                _save(acct)
+                close(tid, px, reason="time")  # time-stop at the live price
+                acct.update(_load())
+            continue
+
+        # legacy fixed bracket (trailing disabled)
         if pos["stop"] and px <= pos["stop"]:
-            _save(acct)  # persist the mark before the close re-reads
+            _save(acct)
             close(tid, pos["stop"], reason="stop")
             acct.update(_load())
         elif pos["target"] and px >= pos["target"]:
@@ -355,6 +406,7 @@ def account() -> dict:
             {
                 "id": tid,
                 **{k: p[k] for k in ("ticker", "name", "shares", "entry", "stop", "target", "opened_at", "decision")},
+                "trail_stop": p.get("trail_stop"),  # live ratcheting exit level (None on legacy positions)
                 "current": cur,
                 "unrealized": upnl,
                 "unrealized_pct": round((cur / p["entry"] - 1) * 100, 2) if p["entry"] else 0.0,

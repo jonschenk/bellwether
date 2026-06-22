@@ -174,7 +174,7 @@ function render(regime, engine, acct, journal, queue, notes, events) {
     if (acct.positions && acct.positions.length) {
       html += `<table style="margin-top:10px"><thead><tr><th>Ticker</th><th>Now</th><th>P&L</th><th>R</th><th></th></tr></thead><tbody>`;
       for (const p of acct.positions) {
-        html += `<tr><td class="t">${p.ticker}<div class="muted small">${p.shares} @ $${fmt(p.entry)}</div></td>
+        html += `<tr><td class="t">${p.ticker}<div class="muted small">${p.shares} @ $${fmt(p.entry)}${p.trail_stop?` · trail $${fmt(p.trail_stop)}`:""}</div></td>
           <td>$${fmt(p.current)}</td>
           <td class="${p.unrealized>=0?'pos':'neg'}">${signed(p.unrealized)}<div class="small ${p.unrealized>=0?'pos':'neg'}">${p.unrealized_pct>=0?'+':''}${p.unrealized_pct}%</div></td>
           <td class="${(p.r??0)>=0?'pos':'neg'}">${p.r==null?'—':(p.r>=0?'+':'')+p.r+'R'}</td>

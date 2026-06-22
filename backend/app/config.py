@@ -41,6 +41,11 @@ class ScanSettings(BaseModel):
     paper_order_type: str = Field(default="market")
     open_buffer_minutes: int = Field(default=0, ge=0, le=120)  # MOO: wait this long after 9:30 ET to fill (skip the squirrely open)
 
+    # --- exit management (validated on the backtester: an ATR trailing stop beat the fixed
+    # stop+target on BOTH out-of-sample expectancy AND drawdown, full universe, incl. unseen bears) ---
+    trailing_stop: bool = Field(default=True)  # True = ratcheting ATR trail (no fixed target); False = fixed stop+target
+    max_hold_days: int = Field(default=10, ge=1)  # time-stop: close at market after this many trading days held
+
     # --- earnings risk ---
     # Flag a setup whose next earnings report falls within this many days (a binary gap the ATR
     # stop can't cover). 0 = don't check earnings. Flagged setups are surfaced with a warning and

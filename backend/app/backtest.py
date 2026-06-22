@@ -380,6 +380,7 @@ def _trades_for(
     market_up: pd.Series | None = None, breadth: pd.Series | None = None,
     strategy: str = "leader_pullback", slippage_bps: float = 0.0,
     regime_gate: pd.Series | None = None, exit_mode: str = "fixed",
+    trail_mult: float | None = None,
 ) -> list[Trade]:
     """All non-overlapping trades for one ticker: take each signal, but don't re-enter the
     same name while a position in it is still open. Dispatches on `strategy`. `regime_gate`
@@ -404,7 +405,7 @@ def _trades_for(
     for loc in locs:
         if loc < MIN_BARS or loc <= in_until_loc:
             continue
-        t = simulate(ind, loc, s, max_hold, slippage_bps, exit_mode)
+        t = simulate(ind, loc, s, max_hold, slippage_bps, exit_mode, trail_mult)
         if t is None:
             continue
         t.ticker = ticker
@@ -493,13 +494,13 @@ def build_dataset(start: str, end: str, universe: str = "curated", tickers: list
 
 def run_on_dataset(ds: dict, settings: ScanSettings, max_hold: int = DEFAULT_MAX_HOLD,
                    strategy: str = "leader_pullback", slippage_bps: float = 0.0,
-                   exit_mode: str = "fixed") -> dict:
+                   exit_mode: str = "fixed", trail_mult: float | None = None) -> dict:
     """Run ONE variation against a prebuilt dataset — the cheap, repeatable part."""
     trades: list[Trade] = []
     market_up, breadth = ds.get("market_up"), ds.get("breadth")
     for t, ind in ds["frames"].items():
         trades.extend(_trades_for(t, ind, ds["rs"][t], settings, max_hold, market_up, breadth, strategy,
-                                  slippage_bps, exit_mode=exit_mode))
+                                  slippage_bps, exit_mode=exit_mode, trail_mult=trail_mult))
     trades.sort(key=lambda x: x.entry_date)
     return {"stats": _stats(trades), "trades": trades}
 
@@ -592,6 +593,23 @@ def compare_exits(ds: dict, split: str | None, capital: float = DEFAULT_CAPITAL,
                                 "leader_pullback", slippage_bps, exit_mode=mode)["trades"]
         tr, te = _split_stats(trades, split) if split else ({}, {})
         out.append((mode, _stats(trades), tr, te))
+    return out
+
+
+def sweep_trail(ds: dict, split: str | None, capital: float = DEFAULT_CAPITAL,
+                slippage_bps: float = 0.0, mults=(1.0, 1.5, 2.0, 2.5, 3.0),
+                params: dict | None = None, max_hold: int = DEFAULT_MAX_HOLD) -> list[tuple]:
+    """Vary ONLY the trailing distance (in ATRs) while holding the entry, sizing, and the INITIAL
+    stop fixed — so this isolates whether the trail's edge is a knife-edge on the distance I picked
+    (which just reused the stop multiple, untuned) or is stable across a range. Returns
+    [(mult, full_stats, train_stats, test_stats)]."""
+    params = params if params is not None else DEFAULT_ROUTER["bull"][1]
+    out = []
+    for m in mults:
+        trades = run_on_dataset(ds, ScanSettings(capital=capital, **params), max_hold,
+                                "leader_pullback", slippage_bps, exit_mode="trail", trail_mult=m)["trades"]
+        tr, te = _split_stats(trades, split) if split else ({}, {})
+        out.append((m, _stats(trades), tr, te))
     return out
 
 
@@ -688,6 +706,8 @@ def main() -> None:
                    help="stop management for leader_pullback: fixed | breakeven (BE after +1R) | trail (ATR chandelier, no cap)")
     p.add_argument("--exit-compare", action="store_true",
                    help="head-to-head: fixed vs breakeven vs trail on the bull-leg variation (use with --split for OOS)")
+    p.add_argument("--trail-sweep", action="store_true",
+                   help="vary ONLY the trail distance (1.0-3.0xATR) on the bull leg — overfit/knife-edge check")
     args = p.parse_args()
     cands = MEANREV_CANDIDATES if args.strategy == "mean_reversion" else CANDIDATES
     bps = args.slippage_bps
@@ -696,6 +716,21 @@ def main() -> None:
     ds = build_dataset(args.start, args.end, args.universe, tickers)  # downloaded once, cached
     if not ds["frames"]:
         print("No data downloaded."); return
+
+    if args.trail_sweep:
+        rows = sweep_trail(ds, args.split, args.capital, bps, max_hold=args.max_hold)
+        print(f"\n=== Trail-distance sweep | leader_pullback bull leg | {ds['names']} names | {bps}bps | {args.start} -> {args.end} ===")
+        print("(initial stop fixed at 1.5xATR; ONLY the trail distance varies)")
+        print(f"\n{'trailxATR':<10}{'trades':>7}{'win%':>7}{'expR':>9}{'PF':>7}{'maxDD':>8}{'totR':>9}", end="")
+        print(f"{'  teExpR':>9}{'tePF':>7}{'teDD':>7}" if args.split else "")
+        for m, s, tr, te in rows:
+            line = (f"{m:<10}{s['trades']:>7}{s['win_rate']:>7}{s['expectancy_r']:>+9.3f}"
+                    f"{s['profit_factor']:>7}{s['max_drawdown_r']:>8.1f}{s['total_r']:>+9.1f}")
+            if args.split and te.get("trades"):
+                line += f"{te['expectancy_r']:>+9.3f}{te['profit_factor']:>7}{te['max_drawdown_r']:>7.1f}"
+            print(line)
+        print("\nStable across the range = robust (not a knife-edge on the distance). (Survivorship-biased + idealized.)")
+        return
 
     if args.exit_compare:
         rows = compare_exits(ds, args.split, args.capital, bps, max_hold=args.max_hold)
