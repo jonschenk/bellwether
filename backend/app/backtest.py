@@ -251,10 +251,20 @@ def _apply_costs(entry: float, exit_price: float, stop: float, slippage_bps: flo
     return entry_fill, exit_fill, r
 
 
-def _simulate(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int, slippage_bps: float = 0.0) -> Trade | None:
+def _simulate(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int, slippage_bps: float = 0.0,
+              exit_mode: str = "fixed", trail_mult: float | None = None) -> Trade | None:
     """Enter at the NEXT bar's open after the signal at position `loc`; walk forward up to
     max_hold bars applying the bracket (stop/target) then a time-stop. Stop is checked before
-    target on a same-day touch of both (conservative)."""
+    target on a same-day touch of both (conservative).
+
+    `exit_mode` controls stop management (all no-lookahead — the stop active during bar j is set
+    only from bars <= j-1; the moving stop is updated AFTER that bar's low/high are tested):
+      - "fixed":     the original static stop + capped/uncapped target (the baseline).
+      - "breakeven": once a bar's high tags entry +1R, raise the stop to entry; target unchanged.
+      - "trail":     chandelier ATR trail — stop = highest_high_since_entry - trail_mult*ATR,
+                     ratcheting up only. The fixed target is REMOVED so winners can run (the trail
+                     and time-stop become the only exits), matching the 'uncap the target' finding.
+    R is always measured against the INITIAL stop (the risk actually taken)."""
     if loc + 1 >= len(ind):
         return None  # no next bar to enter on
     entry = float(ind["open"].iloc[loc + 1])
@@ -263,28 +273,40 @@ def _simulate(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int, slipp
     plan = position_plan(entry, atrv, s, high52)
     if plan is None:
         return None
-    stop, target = plan["stop"], plan["target"]
+    init_stop, target = plan["stop"], plan["target"]
+    rps = entry - init_stop
+    if trail_mult is None:
+        trail_mult = s.atr_stop_mult   # reuse the initial stop's multiple — no new tuned knob
+    use_target = exit_mode != "trail"  # pure trail lets winners run (no fixed cap)
 
+    cur_stop, highest, be_armed = init_stop, entry, False
     exit_price = exit_reason = exit_loc = None
     last = min(loc + max_hold, len(ind) - 1)
     for j in range(loc + 1, last + 1):
         lo, hi = float(ind["low"].iloc[j]), float(ind["high"].iloc[j])
-        if lo <= stop:
-            exit_price, exit_reason, exit_loc = stop, "stop", j
+        if lo <= cur_stop:  # cur_stop reflects only prior bars (no lookahead)
+            reason = "stop" if cur_stop <= init_stop else ("trail" if exit_mode == "trail" else "breakeven")
+            exit_price, exit_reason, exit_loc = cur_stop, reason, j
             break
-        if hi >= target:
+        if use_target and hi >= target:
             exit_price, exit_reason, exit_loc = target, "target", j
             break
+        # ratchet the moving stop AFTER testing this bar (effective from the next bar)
+        if exit_mode == "trail":
+            highest = max(highest, hi)
+            cur_stop = max(cur_stop, highest - trail_mult * atrv)
+        elif exit_mode == "breakeven" and not be_armed and hi >= entry + rps:
+            cur_stop, be_armed = max(cur_stop, entry), True
     if exit_price is None:  # time-stop at the close of the last bar in the window
         exit_price, exit_reason, exit_loc = float(ind["close"].iloc[last]), "time", last
 
-    entry_fill, exit_fill, r = _apply_costs(entry, exit_price, stop, slippage_bps)
+    entry_fill, exit_fill, r = _apply_costs(entry, exit_price, init_stop, slippage_bps)
     return Trade(
         ticker="",  # filled by caller
         signal_date=str(ind.index[loc].date()),
         entry_date=str(ind.index[loc + 1].date()),
         entry=round(entry_fill, 2),
-        stop=round(stop, 2),
+        stop=round(init_stop, 2),
         target=round(target, 2),
         exit_date=str(ind.index[exit_loc].date()),
         exit=round(exit_fill, 2),
@@ -316,9 +338,13 @@ def _signal_mask_meanrev(ind: pd.DataFrame, s: ScanSettings) -> pd.Series:
     return mask
 
 
-def _simulate_meanrev(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int, slippage_bps: float = 0.0) -> Trade | None:
+def _simulate_meanrev(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int, slippage_bps: float = 0.0,
+                      exit_mode: str = "fixed", trail_mult: float | None = None) -> Trade | None:
     """Enter next open; exit on the reversion (a close back above the 5-SMA), a protective ATR
-    stop, or a time-stop. Exit is condition-based, not a fixed target."""
+    stop, or a time-stop. Exit is condition-based, not a fixed target. `exit_mode`/`trail_mult` are
+    accepted for a uniform signature but IGNORED here: trailing/breakeven make no sense for a
+    mean-reversion thesis whose whole edge is the snap-back to the 5-SMA (you want that exit, not a
+    trail past it). So this leg always uses its reversion/stop/time exits."""
     if loc + 1 >= len(ind):
         return None
     entry = float(ind["open"].iloc[loc + 1])
@@ -353,7 +379,7 @@ def _trades_for(
     ticker: str, ind: pd.DataFrame, rs: pd.Series, s: ScanSettings, max_hold: int,
     market_up: pd.Series | None = None, breadth: pd.Series | None = None,
     strategy: str = "leader_pullback", slippage_bps: float = 0.0,
-    regime_gate: pd.Series | None = None,
+    regime_gate: pd.Series | None = None, exit_mode: str = "fixed",
 ) -> list[Trade]:
     """All non-overlapping trades for one ticker: take each signal, but don't re-enter the
     same name while a position in it is still open. Dispatches on `strategy`. `regime_gate`
@@ -378,7 +404,7 @@ def _trades_for(
     for loc in locs:
         if loc < MIN_BARS or loc <= in_until_loc:
             continue
-        t = simulate(ind, loc, s, max_hold, slippage_bps)
+        t = simulate(ind, loc, s, max_hold, slippage_bps, exit_mode)
         if t is None:
             continue
         t.ticker = ticker
@@ -398,7 +424,7 @@ def _stats(trades: list[Trade]) -> dict:
     gross_win = sum(t.r_multiple for t in wins)
     gross_loss = -sum(t.r_multiple for t in losses)
     total_r = sum(t.r_multiple for t in trades)
-    reasons = {r: sum(1 for t in trades if t.exit_reason == r) for r in ("target", "reversion", "stop", "time")}
+    reasons = {r: sum(1 for t in trades if t.exit_reason == r) for r in ("target", "reversion", "stop", "time", "trail", "breakeven")}
 
     # R-multiple equity curve (fixed-risk units, ordered by exit) + peak-to-trough drawdown.
     cum = peak = maxdd = 0.0
@@ -466,12 +492,14 @@ def build_dataset(start: str, end: str, universe: str = "curated", tickers: list
 
 
 def run_on_dataset(ds: dict, settings: ScanSettings, max_hold: int = DEFAULT_MAX_HOLD,
-                   strategy: str = "leader_pullback", slippage_bps: float = 0.0) -> dict:
+                   strategy: str = "leader_pullback", slippage_bps: float = 0.0,
+                   exit_mode: str = "fixed") -> dict:
     """Run ONE variation against a prebuilt dataset — the cheap, repeatable part."""
     trades: list[Trade] = []
     market_up, breadth = ds.get("market_up"), ds.get("breadth")
     for t, ind in ds["frames"].items():
-        trades.extend(_trades_for(t, ind, ds["rs"][t], settings, max_hold, market_up, breadth, strategy, slippage_bps))
+        trades.extend(_trades_for(t, ind, ds["rs"][t], settings, max_hold, market_up, breadth, strategy,
+                                  slippage_bps, exit_mode=exit_mode))
     trades.sort(key=lambda x: x.entry_date)
     return {"stats": _stats(trades), "trades": trades}
 
@@ -548,6 +576,23 @@ def compare(ds: dict, candidates=CANDIDATES, capital: float = DEFAULT_CAPITAL,
     rows = [(name, run_on_dataset(ds, ScanSettings(capital=capital, **ov), mh, strategy, slippage_bps)["stats"]) for name, ov, mh in candidates]
     rows.sort(key=lambda r: r[1].get("expectancy_r", -99), reverse=True)
     return rows
+
+
+def compare_exits(ds: dict, split: str | None, capital: float = DEFAULT_CAPITAL,
+                  slippage_bps: float = 0.0, params: dict | None = None,
+                  max_hold: int = DEFAULT_MAX_HOLD) -> list[tuple]:
+    """Head-to-head of exit-MANAGEMENT modes on the SAME leader-pullback variation (the router's
+    validated bull leg by default): fixed stop+target vs breakeven-after-+1R vs ATR trailing. The
+    entry signal + sizing are held identical so the ONLY thing that varies is how the trade is
+    managed. Returns [(mode, full_stats, train_stats, test_stats)]."""
+    params = params if params is not None else DEFAULT_ROUTER["bull"][1]
+    out = []
+    for mode in ("fixed", "breakeven", "trail"):
+        trades = run_on_dataset(ds, ScanSettings(capital=capital, **params), max_hold,
+                                "leader_pullback", slippage_bps, exit_mode=mode)["trades"]
+        tr, te = _split_stats(trades, split) if split else ({}, {})
+        out.append((mode, _stats(trades), tr, te))
+    return out
 
 
 def _split_stats(trades: list[Trade], split: str) -> tuple[dict, dict]:
@@ -639,6 +684,10 @@ def main() -> None:
     p.add_argument("--strategy", default="leader_pullback", choices=["leader_pullback", "mean_reversion"])
     p.add_argument("--slippage-bps", type=float, default=5.0, help="per-side slippage in bps (default 5; 0 = frictionless)")
     p.add_argument("--router", action="store_true", help="run the regime router (bull->leader, chop->meanrev, bear->cash)")
+    p.add_argument("--exit-mode", default="fixed", choices=["fixed", "breakeven", "trail"],
+                   help="stop management for leader_pullback: fixed | breakeven (BE after +1R) | trail (ATR chandelier, no cap)")
+    p.add_argument("--exit-compare", action="store_true",
+                   help="head-to-head: fixed vs breakeven vs trail on the bull-leg variation (use with --split for OOS)")
     args = p.parse_args()
     cands = MEANREV_CANDIDATES if args.strategy == "mean_reversion" else CANDIDATES
     bps = args.slippage_bps
@@ -647,6 +696,30 @@ def main() -> None:
     ds = build_dataset(args.start, args.end, args.universe, tickers)  # downloaded once, cached
     if not ds["frames"]:
         print("No data downloaded."); return
+
+    if args.exit_compare:
+        rows = compare_exits(ds, args.split, args.capital, bps, max_hold=args.max_hold)
+        print(f"\n=== Exit-management compare | leader_pullback bull leg ({DEFAULT_ROUTER['bull'][1]}) ===")
+        _trail = ScanSettings(**DEFAULT_ROUTER['bull'][1]).atr_stop_mult
+        print(f"{ds['names']} names | {bps}bps slippage | {args.start} -> {args.end} | trail = {_trail}xATR (= the initial stop's multiple)")
+        print(f"\n{'mode':<12}{'trades':>7}{'win%':>7}{'expR':>9}{'PF':>7}{'maxDD':>8}{'totR':>9}  exits")
+        for mode, s, tr, te in rows:
+            ex = s.get("exits", {})
+            exits = f"tgt {ex.get('target',0)} | stop {ex.get('stop',0)} | trail {ex.get('trail',0)} | be {ex.get('breakeven',0)} | time {ex.get('time',0)}"
+            print(f"{mode:<12}{s['trades']:>7}{s['win_rate']:>7}{s['expectancy_r']:>+9.3f}"
+                  f"{s['profit_factor']:>7}{s['max_drawdown_r']:>8.1f}{s['total_r']:>+9.1f}  {exits}")
+        if args.split:
+            print(f"\n--- Out-of-sample @ {args.split} (train < split, test >=) ---")
+            print(f"{'mode':<12}{'trN':>6}{'trainExpR':>11}{'teN':>6}{'testExpR':>10}{'testPF':>8}{'testDD':>8}")
+            for mode, s, tr, te in rows:
+                trx = f"{tr['expectancy_r']:+.3f}" if tr.get("trades") else "—"
+                tex = f"{te['expectancy_r']:+.3f}" if te.get("trades") else "—"
+                tepf = te.get("profit_factor", "—") if te.get("trades") else "—"
+                tedd = f"{te['max_drawdown_r']:.1f}" if te.get("trades") else "—"
+                print(f"{mode:<12}{tr.get('trades',0):>6}{trx:>11}{te.get('trades',0):>6}{tex:>10}{str(tepf):>8}{tedd:>8}")
+        print("\nRead: does breakeven/trail beat fixed on TEST expR AND drawdown? Trail removes the target")
+        print("(lets winners run) so watch whether it trades fewer-but-bigger. (Survivorship-biased + idealized.)")
+        return
 
     if args.router:
         if ds.get("regime") is None:
@@ -769,7 +842,7 @@ def main() -> None:
     except Exception:
         pass
     settings = ScanSettings(capital=args.capital, **params)
-    res = run_on_dataset(ds, settings, args.max_hold, args.strategy, bps)
+    res = run_on_dataset(ds, settings, args.max_hold, args.strategy, bps, exit_mode=args.exit_mode)
     s = res["stats"]
     print(f"\n=== Backtest {args.start} -> {args.end} | {ds['names']} names | max-hold {args.max_hold}d ===")
     if not s.get("trades"):
@@ -780,7 +853,9 @@ def main() -> None:
     print(f"Profit factor: {s['profit_factor']}")
     print(f"Total:         {s['total_r']:+}R   max drawdown: {s['max_drawdown_r']}R")
     print(f"Avg win/loss:  {s['avg_win_r']:+}R / {s['avg_loss_r']:+}R   avg hold {s['avg_hold_days']}d")
-    print(f"Exits:         target {s['exits']['target']} | reversion {s['exits']['reversion']} | stop {s['exits']['stop']} | time {s['exits']['time']}")
+    ex = s["exits"]
+    print(f"Exits:         target {ex['target']} | reversion {ex['reversion']} | stop {ex['stop']} | "
+          f"trail {ex['trail']} | breakeven {ex['breakeven']} | time {ex['time']}")
     if args.csv:
         export_trades_csv(res["trades"], args.csv)
         print(f"(wrote {len(res['trades'])} trades to {args.csv})")
