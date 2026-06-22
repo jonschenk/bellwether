@@ -204,35 +204,44 @@ def auto_execute(results: list[dict], max_positions: int = 5, exclude: set[str] 
     router leg). Guardrails: cap concurrent positions, skip names already held / in `exclude` /
     flagged for imminent earnings / unsizable. Returns what it bought + why it skipped."""
     from .config import load_settings
+    from . import risk
     settings = load_settings()
     exclude = exclude or set()
     acct = account()
     # open positions AND resting orders both count against the cap / dedup
     held = {p["ticker"] for p in acct.get("positions", [])} | {o["ticker"] for o in acct.get("orders", [])}
     open_count = len(acct.get("positions", [])) + len(acct.get("orders", []))
-    bought: list[str] = []
+    equity, cash = acct["equity"], acct["cash"]
+    free_slots = max(0, min(max_positions, settings.max_concurrent_positions) - open_count)
     skipped: list[dict] = []
 
+    # Eligible names (skip held / excluded / earnings-soon / unsizable), ranked by setup score.
+    eligible = []
     for r in sorted(results, key=lambda x: x.get("setup_score", 0), reverse=True):
         ticker = r["ticker"]
-        if open_count >= max_positions:
-            skipped.append({"ticker": ticker, "reason": "max positions reached"})
-            continue
         if ticker in held or ticker in exclude:
-            continue  # already held/ordered or already acted on today
+            continue
         if r.get("earnings_soon"):
             skipped.append({"ticker": ticker, "reason": f"earnings in {r.get('days_to_earnings')}d"})
             continue
         if not (r.get("plan") or {}).get("shares"):
             skipped.append({"ticker": ticker, "reason": "not sizable"})
             continue
+        eligible.append(r)
+
+    # Budget-aware allocation: size off REAL equity/cash, per-position cap, fill best-first into the
+    # free slots (same allocator the nightly path uses — no more sizing each as if full cash were free).
+    taken, dropped = risk.allocate(eligible, settings, equity, cash, free_slots)
+    for d in dropped:
+        skipped.append({"ticker": d["ticker"], "reason": d["reason"]})
+
+    bought: list[str] = []
+    for r in taken:  # r already carries the budget-sized plan
         res = submit(r, settings, variation_id, variation_params)  # honours the order type; tags the trade
         if res.get("error"):
-            skipped.append({"ticker": ticker, "reason": res["error"]})
+            skipped.append({"ticker": r["ticker"], "reason": res["error"]})
             continue
-        bought.append(ticker)
-        held.add(ticker)
-        open_count += 1
+        bought.append(r["ticker"])
 
     return {"bought": bought, "skipped": skipped, "account": account()}
 
