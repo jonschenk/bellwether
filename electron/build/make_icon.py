@@ -1,6 +1,7 @@
-"""Generate the app icon: rising candlesticks and an upward trend arrow on a
-dark gradient squircle, with a neon glow and gradient fills. Rendered at 2x and
-downscaled for crisp anti-aliased edges. Outputs icon_1024.png."""
+"""Generate the Bellwether app icon: a bell (the bellwether's bell) on a dark gradient
+squircle, in the app's green/blue palette, with a neon glow, a crown loop, a clapper, and a
+couple of little ringing lines that double as a nod to the alert engine. Rendered at 2x and
+downscaled for crisp anti-aliased edges. Outputs icon_1024.png and icon.ico."""
 
 import math
 
@@ -12,8 +13,8 @@ W = S * SS      # working size
 RADIUS = int(W * 0.235)
 
 GREEN = (74, 222, 128)
-GREEN_HI = (170, 252, 200)   # candle top (bright mint)
-GREEN_LO = (46, 190, 120)    # candle bottom (emerald)
+GREEN_HI = (170, 252, 200)   # bell top (bright mint)
+GREEN_LO = (46, 190, 120)    # bell bottom (emerald)
 ACCENT = (91, 140, 255)
 ACCENT_HI = (150, 182, 255)
 
@@ -23,7 +24,12 @@ def lerp(a, b, t):
 
 
 def sc(v):
-    return int(v * SS)
+    return v * SS
+
+
+def smoothstep(a, b, x):
+    t = max(0.0, min(1.0, (x - a) / (b - a)))
+    return t * t * (3 - 2 * t)
 
 
 def vgradient(size, top, bottom):
@@ -43,64 +49,108 @@ ImageDraw.Draw(mask).rounded_rectangle([0, 0, W - 1, W - 1], radius=RADIUS, fill
 img = Image.new("RGBA", (W, W), (0, 0, 0, 0))
 img.paste(bg, (0, 0), mask)
 
-# geometry in 1024-space: x, wick_top, wick_bot, body_top, body_bot
-candles = [
-    (300, 590, 805, 650, 775),
-    (468, 495, 715, 555, 690),
-    (636, 405, 655, 465, 618),
-    (792, 298, 575, 358, 540),
-]
-BW = 82
-A, B = (226, 715), (814, 320)  # trend line endpoints
+
+# ---- bell geometry (1024-space, centred on x=512) ----
+CX = 512.0
+Y_TOP = 360.0   # where the dome shoulders sit
+Y_RIM = 686.0   # top of the flared mouth
+Y_BOT = 748.0   # bottom lip
+
+
+def half_at(u):
+    """Half-width of the body at fraction u (0 = shoulder, 1 = rim)."""
+    return 60 + 145 * (u ** 1.3) + 26 * smoothstep(0.62, 1.0, u)
+
+
+def bell_outline():
+    """A single closed polygon for the bell body: rounded dome, flaring sides, lipped mouth
+    with a gently open (concave-up) bottom."""
+    rim_h = half_at(1.0)
+    # rounded dome cap across the top (left shoulder -> right shoulder, bulging up)
+    dome = []
+    for i in range(25):
+        t = i / 24
+        x = (CX - 60) + 120 * t
+        dome.append((x, Y_TOP - 40 * math.sin(math.pi * t)))
+    # right side, shoulder down to the rim
+    right = []
+    for i in range(65):
+        u = i / 64
+        right.append((CX + half_at(u), Y_TOP + (Y_RIM - Y_TOP) * u))
+    right.append((CX + rim_h + 18, Y_RIM + 10))   # lip flares out
+    right.append((CX + rim_h + 10, Y_BOT))         # down the lip
+    # open mouth: concave-up bottom edge, right lip -> left lip
+    bottom = []
+    x_r, x_l = CX + rim_h + 10, CX - (rim_h + 10)
+    for i in range(29):
+        t = i / 28
+        bottom.append((x_r + (x_l - x_r) * t, Y_BOT - 26 * math.sin(math.pi * t)))
+    left = [(2 * CX - px, py) for px, py in reversed(right)]
+    return dome + right + bottom + left
+
+
+OUTLINE = bell_outline()
+CROWN = [472, 252, 552, 348]                 # crown loop bbox
+CLAP = (512, 768, 26)                         # clapper x, y, r
+RINGS = [((700, 372), (770, 344)), ((712, 420), (792, 410))]  # right-side ringing lines (mirrored)
+
+
+def scaled(points):
+    return [(sc(px), sc(py)) for px, py in points]
+
 
 # ---- glow layer (bright shapes, blurred, composited underneath) ----
 glow = Image.new("RGBA", (W, W), (0, 0, 0, 0))
 gd = ImageDraw.Draw(glow)
-for x, _, _, bt, bb in candles:
-    gd.rounded_rectangle([sc(x - BW // 2), sc(bt), sc(x + BW // 2), sc(bb)], radius=sc(14), fill=GREEN + (255,))
-gd.line([(sc(A[0]), sc(A[1])), (sc(B[0]), sc(B[1]))], fill=ACCENT + (255,), width=sc(26))
-glow = glow.filter(ImageFilter.GaussianBlur(sc(17)))
+gd.polygon(scaled(OUTLINE), fill=GREEN + (255,))
+gd.ellipse([sc(v) for v in CROWN], outline=GREEN + (255,), width=int(sc(20)))
+gd.ellipse([sc(CLAP[0] - CLAP[2]), sc(CLAP[1] - CLAP[2]), sc(CLAP[0] + CLAP[2]), sc(CLAP[1] + CLAP[2])],
+           fill=ACCENT + (255,))
+for (ax, ay), (bx, by) in RINGS:
+    for x0, y0, x1, y1 in [(ax, ay, bx, by), (2 * CX - ax, ay, 2 * CX - bx, by)]:
+        gd.line([(sc(x0), sc(y0)), (sc(x1), sc(y1))], fill=ACCENT + (255,), width=int(sc(17)))
+glow = glow.filter(ImageFilter.GaussianBlur(int(sc(16))))
 img.alpha_composite(glow)
 
 draw = ImageDraw.Draw(img)
 
 
-def grad_round_rect(box, c_top, c_bot, radius):
-    x0, y0, x1, y1 = box
+def grad_polygon(points, c_top, c_bot):
+    """Fill an arbitrary polygon (W-space points) with a vertical gradient."""
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    x0, y0, x1, y1 = int(min(xs)), int(min(ys)), int(max(xs)) + 1, int(max(ys)) + 1
     w, h = x1 - x0, y1 - y0
-    if w <= 0 or h <= 0:
-        return
     grad = vgradient((w, h), c_top, c_bot).convert("RGBA")
-    rmask = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(rmask).rounded_rectangle([0, 0, w - 1, h - 1], radius=radius, fill=255)
-    img.paste(grad, (x0, y0), rmask)
+    m = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(m).polygon([(px - x0, py - y0) for px, py in points], fill=255)
+    img.paste(grad, (x0, y0), m)
 
 
-# ---- candles (wick + gradient body) ----
-for x, wt, wb, bt, bb in candles:
-    draw.line([(sc(x), sc(wt)), (sc(x), sc(wb))], fill=GREEN + (210,), width=sc(9))
-    grad_round_rect([sc(x - BW // 2), sc(bt), sc(x + BW // 2), sc(bb)], GREEN_HI, GREEN_LO, sc(14))
+# ---- bell body (gradient fill) ----
+grad_polygon(scaled(OUTLINE), GREEN_HI, GREEN_LO)
 
-# ---- trend arrow (rounded line + arrowhead) ----
-draw.line([(sc(A[0]), sc(A[1])), (sc(B[0]), sc(B[1]))], fill=ACCENT, width=sc(28), joint="curve")
-for p in (A, B):  # round the caps
-    r = sc(14)
-    draw.ellipse([sc(p[0]) - r, sc(p[1]) - r, sc(p[0]) + r, sc(p[1]) + r], fill=ACCENT)
+# ---- crown loop (ring + a touch of sheen) ----
+draw.ellipse([sc(v) for v in CROWN], outline=GREEN_LO, width=int(sc(20)))
+draw.arc([sc(v) for v in CROWN], 150, 250, fill=GREEN_HI, width=int(sc(7)))
 
-ang = math.atan2(B[1] - A[1], B[0] - A[0])
-L, spread = 140, math.radians(29)
-tip = (B[0] + 14 * math.cos(ang), B[1] + 14 * math.sin(ang))
-left = (B[0] - L * math.cos(ang - spread), B[1] - L * math.sin(ang - spread))
-right = (B[0] - L * math.cos(ang + spread), B[1] - L * math.sin(ang + spread))
-draw.polygon(
-    [(sc(tip[0]), sc(tip[1])), (sc(left[0]), sc(left[1])), (sc(right[0]), sc(right[1]))],
-    fill=ACCENT_HI,
-)
+# ---- clapper (accent dot + highlight) ----
+cx, cy, cr = CLAP
+draw.ellipse([sc(cx - cr), sc(cy - cr), sc(cx + cr), sc(cy + cr)], fill=ACCENT)
+draw.ellipse([sc(cx - 9), sc(cy - 13), sc(cx + 3), sc(cy - 1)], fill=ACCENT_HI)
+
+# ---- ringing lines (both sides), rounded caps ----
+for (ax, ay), (bx, by) in RINGS:
+    for x0, y0, x1, y1 in [(ax, ay, bx, by), (2 * CX - ax, ay, 2 * CX - bx, by)]:
+        draw.line([(sc(x0), sc(y0)), (sc(x1), sc(y1))], fill=ACCENT, width=int(sc(17)))
+        for px, py in [(x0, y0), (x1, y1)]:
+            r = sc(8)
+            draw.ellipse([sc(px) - r, sc(py) - r, sc(px) + r, sc(py) + r], fill=ACCENT)
 
 # ---- subtle top sheen for depth ----
 sheen = Image.new("RGBA", (W, W), (0, 0, 0, 0))
 ImageDraw.Draw(sheen).rounded_rectangle(
-    [sc(4), sc(4), W - 1 - sc(4), W - 1 - sc(4)], radius=RADIUS, outline=(255, 255, 255, 38), width=sc(3)
+    [sc(4), sc(4), W - 1 - sc(4), W - 1 - sc(4)], radius=RADIUS, outline=(255, 255, 255, 38), width=int(sc(3))
 )
 img.alpha_composite(sheen)
 
