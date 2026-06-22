@@ -119,7 +119,7 @@ let engineState = null;
 
 async function load() {
   try {
-    const [regime, engine, acct, journal, queue, notes, events] = await Promise.all([
+    const [regime, engine, acct, journal, queue, notes, events, settings] = await Promise.all([
       api("/api/regime").catch(()=>({available:false})),
       api("/api/alerts/engine").catch(()=>null),
       api("/api/paper/account").catch(()=>null),
@@ -127,17 +127,18 @@ async function load() {
       api("/api/queue").catch(()=>({pending:[],decided:[]})),
       api("/api/daily-notes").catch(()=>({notes:[]})),
       api("/api/events?n=16").catch(()=>({events:[]})),
+      api("/api/settings").catch(()=>({})),
     ]);
     engineState = engine;
     document.getElementById("offline").style.display = "none";
-    render(regime, engine, acct, journal, queue, notes, events);
+    render(regime, engine, acct, journal, queue, notes, events, settings);
     document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) {
     document.getElementById("offline").style.display = "block";
   }
 }
 
-function render(regime, engine, acct, journal, queue, notes, events) {
+function render(regime, engine, acct, journal, queue, notes, events, settings) {
   // regime pill
   const rg = document.getElementById("regime");
   if (regime && regime.available) rg.innerHTML = `<span class="pill ${regime.regime}">${regime.label} → ${regime.strategy}</span>`;
@@ -165,11 +166,18 @@ function render(regime, engine, acct, journal, queue, notes, events) {
   // account + positions
   if (acct) {
     const tot = acct.total_pnl||0;
+    const maxPos = (settings && settings.max_concurrent_positions) || 4;
+    const used = (acct.positions||[]).length;
+    const full = used >= maxPos;
     html += `<div class="card"><h2>Paper account</h2>
       <div class="acct"><span class="big">$${fmt(acct.equity)}</span>
         <span><span class="lab">Cash</span>$${fmt(acct.cash)}</span>
         <span class="${acct.open_pnl>=0?'pos':'neg'}"><span class="lab">Open</span>${signed(acct.open_pnl)}</span>
         <span class="${acct.realized_pnl>=0?'pos':'neg'}"><span class="lab">Realized</span>${signed(acct.realized_pnl)}</span>
+      </div>
+      <div class="row small" style="margin-top:8px">
+        <span class="pill ${full?'chop':'bull'}" style="font-size:11px">${used}/${maxPos} slots</span>
+        ${full ? `<span class="muted">fully invested</span>` : `<span class="pos">${maxPos-used} free</span><span class="muted">·</span><span class="muted">$${fmt(acct.cash)} to deploy</span>`}
       </div>`;
     if (acct.positions && acct.positions.length) {
       html += `<table style="margin-top:10px"><thead><tr><th>Ticker</th><th>Now</th><th>P&L</th><th>R</th><th></th></tr></thead><tbody>`;
