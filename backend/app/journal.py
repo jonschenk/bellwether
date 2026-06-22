@@ -200,18 +200,27 @@ def summary_by_variation() -> dict[str, dict]:
             continue
         s = out.setdefault(
             t["variation_id"],
-            {"trades": 0, "wins": 0, "total_r": 0.0, "total_pnl": 0.0},
+            {"trades": 0, "wins": 0, "total_r": 0.0, "total_pnl": 0.0,
+             "win_r_sum": 0.0, "losses": 0, "loss_r_sum": 0.0},
         )
         s["trades"] += 1
-        s["wins"] += 1 if t["outcome"] == "win" else 0
         s["total_r"] += t["r_multiple"]
         s["total_pnl"] += t.get("pnl") or 0.0
+        if t["outcome"] == "win":
+            s["wins"] += 1
+            s["win_r_sum"] += t["r_multiple"]
+        elif t["outcome"] == "loss":
+            s["losses"] += 1
+            s["loss_r_sum"] += t["r_multiple"]  # negative R
 
     for vid, s in out.items():
         n = s["trades"]
         s["winrate"] = round(s["wins"] / n * 100, 1) if n else 0.0
         s["expectancy_r"] = round(s["total_r"] / n, 2) if n else 0.0
         s["total_pnl"] = round(s["total_pnl"], 2)
+        # Average R on winners and losers — the payoff ratio Kelly sizing needs.
+        s["avg_win_r"] = round(s["win_r_sum"] / s["wins"], 2) if s["wins"] else None
+        s["avg_loss_r"] = round(s["loss_r_sum"] / s["losses"], 2) if s["losses"] else None
         s["low_sample"] = n < MIN_SAMPLE
     return out
 

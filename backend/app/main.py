@@ -27,6 +27,7 @@ from . import alert_engine
 from . import notify
 from . import equity_log
 from . import router
+from . import risk
 from . import daily_notes
 from .live import live
 from .scanner import refresh_results, scan_market
@@ -453,6 +454,14 @@ async def _alert_cycle() -> None:
     if strat == "cash":  # bear -> sit out, trade nothing (the kill-switch)
         alert_engine.record("bear-cash", regime=regime, strategy="cash")
         return
+    # Fractional-Kelly sizing from THIS regime's measured edge (no-op until ~20 closed trades,
+    # then it sizes on the evidence). ai_picks is always on, so the live variation is router-<strat>+ai.
+    base_risk = load_settings().risk_pct
+    perf = journal.summary_by_variation().get(f"router-{strat}+ai")
+    kelly_pct, kelly_note = risk.kelly_risk_pct(base_risk, perf)
+    if kelly_pct != base_risk:
+        log.info("Kelly sizing: %s risk_pct %.2f -> %.2f (%s)", strat, base_risk, kelly_pct, kelly_note)
+    params = {**params, "risk_pct": kelly_pct}
     await _run_scan(force_fresh=False, scan_strategy=strat, params_override=params)
     rows = scan_state.get("results") or []
     exclude = alert_engine.exclude_today()

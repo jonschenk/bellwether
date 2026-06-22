@@ -37,11 +37,13 @@ RECOMMEND_SCHEMA = {
                 "properties": {
                     "ticker": {"type": "string"},
                     "rank": {"type": "integer", "description": "1 = top pick"},
+                    "bull": {"type": "string", "description": "The strongest one-sentence case FOR taking this trade."},
+                    "bear": {"type": "string", "description": "The strongest one-sentence case AGAINST it (what kills the trade)."},
                     "call": {"type": "string", "enum": ["Take", "Watch"]},
-                    "reason": {"type": "string", "description": "One sentence: why this one, for this account."},
+                    "reason": {"type": "string", "description": "One sentence: the verdict — why the bull case beats the bear case for THIS account."},
                     "conviction": {"type": "string", "enum": ["High", "Medium", "Low"]},
                 },
-                "required": ["ticker", "rank", "call", "reason", "conviction"],
+                "required": ["ticker", "rank", "bull", "bear", "call", "reason", "conviction"],
                 "additionalProperties": False,
             },
         },
@@ -92,7 +94,9 @@ OPEN POSITIONS: {_positions_block(positions)}
 CANDIDATES (already ranked by the scanner's setup score):
 {lines}
 
-Pick the 2-4 you'd actually focus on, best first. Weigh: cleanliness of the entry, reward:risk, trend/volume quality, AND portfolio fit — don't recommend piling into a sector the account is already heavy in, and prefer names that diversify or have the best standalone setup. Give each pick a one-sentence reason specific to this account, a Take or Watch call, and a conviction. Then a short overall summary and a note on what to skip and why. Only use tickers from the list. Be selective — if only one or two are genuinely worth it, recommend only those."""
+Pick the 2-4 you'd actually focus on, best first. Weigh: cleanliness of the entry, reward:risk, trend/volume quality, AND portfolio fit — don't recommend piling into a sector the account is already heavy in, and prefer names that diversify or have the best standalone setup.
+
+For EACH pick, argue it like a desk would before committing capital: write the strongest BULL case for the trade, then the strongest BEAR case against it (what would actually make it fail — extended into resistance, thin volume, sector already heavy, fragile pattern), and only then your verdict. A name earns "Take" only when the bull case genuinely survives the bear case; if the bear case has real teeth, call it "Watch" or leave it out. This adversarial step is the point — do not skip the bear case or make it a throwaway. Give each pick a one-sentence reason (the verdict), a Take or Watch call, and a conviction. Then a short overall summary and a note on what to skip and why. Only use tickers from the list. Be selective — if only one or two survive the debate, recommend only those."""
 
 
 async def recommend(candidates: list[dict], settings: ScanSettings, positions: list[dict] | None = None) -> dict:
@@ -110,7 +114,7 @@ async def recommend(candidates: list[dict], settings: ScanSettings, positions: l
     try:
         resp = await client.messages.create(
             model=model,
-            max_tokens=1200,
+            max_tokens=1800,  # bull + bear + verdict per pick is wordier than a bare ranking
             output_config={"format": {"type": "json_schema", "schema": RECOMMEND_SCHEMA}},
             messages=[{"role": "user", "content": _build_prompt(candidates, settings, positions)}],
         )
