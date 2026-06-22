@@ -49,7 +49,10 @@ class ScanSettings(BaseModel):
     # --- exit management (validated on the backtester: an ATR trailing stop beat the fixed
     # stop+target on BOTH out-of-sample expectancy AND drawdown, full universe, incl. unseen bears) ---
     trailing_stop: bool = Field(default=True)  # True = ratcheting ATR trail (no fixed target); False = fixed stop+target
-    max_hold_days: int = Field(default=10, ge=1)  # time-stop: close at market after this many trading days held
+    max_hold_days: int = Field(default=20, ge=1)  # time-stop: close at market after this many trading days held
+    # ^ 20, not 10: with the trailing stop, a 10-day leash cut winners the trail would keep riding.
+    # Backtest (curated OOS, trail exit) 10->20d lifted test expR +0.077->+0.094 / PF 1.22->1.26
+    # (DD 59->64R); benefit plateaus by ~20d (60d adds nothing). The time-stop still recycles dead money.
 
     # --- earnings risk ---
     # Flag a setup whose next earnings report falls within this many days (a binary gap the ATR
