@@ -24,6 +24,7 @@ from . import regime as regime_mod
 from . import strategy
 from . import queue as review_queue
 from . import alert_engine
+from . import notify
 from .live import live
 from .scanner import refresh_results, scan_market
 from .trade_case import trade_case
@@ -433,10 +434,18 @@ async def _alert_cycle() -> None:
         # returned for bear above). Nothing here can reach a real broker.
         st = alert_engine.state()
         res = await asyncio.to_thread(paper.auto_execute, rows, st.get("max_positions", 5), exclude)
-        alert_engine.record("auto-traded", regime=regime, strategy=strat, new_tickers=res.get("bought", []))
+        bought = res.get("bought", [])
+        alert_engine.record("auto-traded", regime=regime, strategy=strat, new_tickers=bought)
+        if bought:
+            notify.send(f"Opened {len(bought)} paper position{'s' if len(bought) != 1 else ''}: {', '.join(bought)}",
+                        title=f"Auto-traded · {regime} → {strat}", tags="robot")
     else:
         res = review_queue.build(rows, regime, strat, exclude=exclude)
-        alert_engine.record("watching", regime=regime, strategy=strat, new_tickers=res.get("added_tickers", []))
+        added = res.get("added_tickers", [])
+        alert_engine.record("watching", regime=regime, strategy=strat, new_tickers=added)
+        if added:
+            notify.send(f"{len(added)} new setup{'s' if len(added) != 1 else ''} to review: {', '.join(added)}",
+                        title=f"Alerts · {regime} → {strat}", tags="bell")
 
 
 async def _alert_loop() -> None:

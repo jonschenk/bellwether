@@ -25,6 +25,7 @@ from pathlib import Path
 
 from . import alert_engine
 from . import journal
+from . import notify
 from .config import ScanSettings
 from .universe import bulk_quote
 
@@ -234,12 +235,23 @@ def close(trade_id: str, exit_price: float | None = None, reason: str = "manual"
     px = exit_price or _quote([pos["ticker"]]).get(pos["ticker"]) or pos["current"]
     px = round(px * (1 - SLIPPAGE_BPS / 10000), 2)  # sell/stop/target fills lower (slippage)
     acct["cash"] = round(acct["cash"] + pos["shares"] * px, 2)
+    closed = None
     try:
-        journal.close_trade(trade_id, round(px, 2), exit_reason=reason, mae=pos.get("mae"), mfe=pos.get("mfe"))
+        closed = journal.close_trade(trade_id, round(px, 2), exit_reason=reason, mae=pos.get("mae"), mfe=pos.get("mfe"))
     except (KeyError, ValueError):
         log.exception("journal close failed for %s", trade_id)
     del acct["positions"][trade_id]
     _save(acct)
+    # Push a phone alert when the bracket fired (not for manual closes — you did those yourself).
+    if reason in ("stop", "target") and closed:
+        r, pnl = closed.get("r_multiple"), closed.get("pnl")
+        emoji = "white_check_mark" if reason == "target" else "octagonal_sign"
+        notify.send(
+            f"{pos['ticker']} {reason} — {('+' if (r or 0) >= 0 else '')}{r}R "
+            f"({('+' if (pnl or 0) >= 0 else '−')}${abs(pnl or 0):,.0f})",
+            title=f"Paper {reason} hit", tags=emoji,
+            priority="high" if reason == "stop" else "default",
+        )
     return account()
 
 
