@@ -23,6 +23,7 @@ import csv
 import datetime as dt
 import hashlib
 import logging
+import math
 import pickle
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -686,6 +687,123 @@ def _regime_day_counts(regime: pd.Series | None, start: str, split: str | None =
     return out
 
 
+def run_portfolio(ds: dict, settings: ScanSettings, max_positions: int, start: str, end: str,
+                  max_hold: int = DEFAULT_MAX_HOLD, slippage_bps: float = 0.0,
+                  strategy: str = "leader_pullback", starting_cash: float | None = None,
+                  regime_match: str | None = None) -> dict:
+    """Day-by-day PORTFOLIO simulation with the live constraints the per-trade backtest ignores:
+    shared cash, a position-count cap, a per-position allocation cap, and trailing-stop + time-stop
+    exits. Each day, signals compete for the limited capital (ranked best-first by RS), so the book
+    captures a realistic SUBSET of all signals — which is what shows how the slot/cap choices actually
+    perform on equity and drawdown. `regime_match` gates ENTRIES to days in that regime (the router's
+    kill-switch: leader only opens in 'bull'; cash otherwise) — open positions still ride/exit freely.
+    Enters at the next open; no-lookahead on the trailing exit.
+
+    EXPERIMENTAL / KNOWN BUG: does not yet reconcile with the per-trade backtest at the universe level.
+    Unconstrained (infinite cash, no cap/gate) it should reproduce run_on_dataset's per-trade expectancy
+    but comes out ~0.08R too low. Single-ticker runs DO reconcile, so the exit accounting is right and the
+    bug is in the cross-ticker selection/aggregation. Don't trust the portfolio return/drawdown until fixed."""
+    frames = ds["frames"]
+    rs_tab = ds["rs"]
+    regime = ds.get("regime")
+    start_cash = starting_cash if starting_cash is not None else settings.capital
+    k = slippage_bps / 10000.0
+    buf = 1 + 0.005  # cash headroom for slippage (matches risk.ALLOC_CASH_BUFFER)
+
+    all_dates = sorted({d for f in frames.values() for d in f.index
+                        if pd.Timestamp(start) <= d <= pd.Timestamp(end)})
+    di = {d: i for i, d in enumerate(all_dates)}
+
+    # signals keyed by ENTRY date (the next open after the signal)
+    entries: dict = {}
+    for tk, ind in frames.items():
+        rs = rs_tab[tk].reindex(ind.index) if tk in rs_tab.columns else pd.Series(index=ind.index, dtype=float)
+        sig = _signal_mask_meanrev(ind, settings) if strategy == "mean_reversion" else _signal_mask(ind, rs, settings)
+        for loc in [ind.index.get_loc(d) for d in sig.index[sig.fillna(False)]]:
+            if loc < MIN_BARS or loc + 1 >= len(ind):
+                continue
+            ed = ind.index[loc + 1]
+            if ed not in di:
+                continue
+            entry = float(ind["open"].iloc[loc + 1])
+            atrv = float(ind["atr"].iloc[loc])
+            stop = entry - settings.atr_stop_mult * atrv
+            if stop <= 0 or entry <= 0:
+                continue
+            rsv = float(rs.iloc[loc]) if loc < len(rs) and pd.notna(rs.iloc[loc]) else 0.0
+            rank = rsv if strategy != "mean_reversion" else -loc  # leader: highest RS first
+            entries.setdefault(ed, []).append({"ticker": tk, "entry": entry, "stop": stop,
+                                               "init_stop_dist": entry - stop, "rank": rank})
+
+    cash = start_cash
+    positions: dict = {}
+    trades, eq = [], []
+    for T in all_dates:
+        # 1) exits (test the trail set on PRIOR days, then update with today's bar)
+        for tk in list(positions.keys()):
+            ind = frames[tk]
+            if T not in ind.index:
+                continue
+            p = positions[tk]
+            hi, lo, cl = float(ind.at[T, "high"]), float(ind.at[T, "low"]), float(ind.at[T, "close"])
+            exit_px = reason = None
+            if lo <= p["trail_stop"]:
+                exit_px = p["trail_stop"]
+                reason = "stop" if p["trail_stop"] <= p["stop"] else "trail"
+            else:
+                p["mfe"] = max(p["mfe"], hi)
+                p["trail_stop"] = max(p["trail_stop"], p["mfe"] - p["init_stop_dist"])
+                if di[T] - p["entry_di"] >= max_hold:
+                    exit_px, reason = cl, "time"
+            if exit_px is not None:
+                fill = exit_px * (1 - k)
+                cash += p["shares"] * fill
+                r = (fill - p["entry_fill"]) / p["init_stop_dist"] if p["init_stop_dist"] > 0 else 0.0
+                trades.append({"r": r, "reason": reason})
+                del positions[tk]
+
+        # 2) entries — today's signals, ranked, into free slots + cash (off current equity).
+        # Regime kill-switch: only OPEN new positions in the strategy's regime (cash otherwise).
+        equity_now = cash + sum(p["shares"] * float(frames[t].at[T, "close"])
+                                for t, p in positions.items() if T in frames[t].index)
+        in_regime = regime_match is None or regime is None or (T in regime.index and regime.at[T] == regime_match)
+        for e in (sorted(entries.get(T, []), key=lambda x: x["rank"], reverse=True) if in_regime else []):
+            if len(positions) >= max_positions or e["ticker"] in positions:
+                continue
+            sd = e["init_stop_dist"]
+            shares = min(math.floor(equity_now * settings.risk_pct / 100 / sd),
+                         math.floor(cash / (e["entry"] * buf)),
+                         math.floor(equity_now * settings.max_alloc_pct / 100 / e["entry"]))
+            if shares < 1:
+                continue
+            entry_fill = e["entry"] * (1 + k)
+            cost = shares * entry_fill
+            if cost > cash:
+                continue
+            cash -= cost
+            positions[e["ticker"]] = {"shares": shares, "entry_fill": entry_fill, "stop": e["stop"],
+                                      "init_stop_dist": sd, "trail_stop": e["stop"], "mfe": e["entry"],
+                                      "entry_di": di[T]}
+
+        mkt = sum(p["shares"] * float(frames[t].at[T, "close"])
+                  for t, p in positions.items() if T in frames[t].index)
+        eq.append(cash + mkt)
+
+    final = eq[-1] if eq else start_cash
+    peak = maxdd = 0.0
+    for v in eq:
+        peak = max(peak, v)
+        maxdd = max(maxdd, (peak - v) / peak if peak > 0 else 0.0)
+    wins = [t for t in trades if t["r"] > 0]
+    rets = pd.Series(eq).pct_change().dropna()
+    sharpe = float(rets.mean() / rets.std() * (252 ** 0.5)) if len(rets) > 1 and rets.std() > 0 else 0.0
+    return {"max_positions": max_positions, "final_equity": round(final, 0),
+            "return_pct": round((final / start_cash - 1) * 100, 1),
+            "max_drawdown_pct": round(maxdd * 100, 1), "sharpe": round(sharpe, 2),
+            "trades": len(trades), "win_rate": round(len(wins) / len(trades) * 100, 1) if trades else 0.0,
+            "expectancy_r": round(sum(t["r"] for t in trades) / len(trades), 3) if trades else 0.0}
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     p = argparse.ArgumentParser(description="Backtest the leader-pullback strategy.")
@@ -708,6 +826,10 @@ def main() -> None:
                    help="head-to-head: fixed vs breakeven vs trail on the bull-leg variation (use with --split for OOS)")
     p.add_argument("--trail-sweep", action="store_true",
                    help="vary ONLY the trail distance (1.0-3.0xATR) on the bull leg — overfit/knife-edge check")
+    p.add_argument("--portfolio", action="store_true",
+                   help="portfolio simulation: shared cash + slots + per-position cap + trailing exits (real constraints)")
+    p.add_argument("--sweep-positions", action="store_true",
+                   help="with --portfolio: sweep max-positions 2..8 to see how the slot count drives return/drawdown")
     args = p.parse_args()
     cands = MEANREV_CANDIDATES if args.strategy == "mean_reversion" else CANDIDATES
     bps = args.slippage_bps
@@ -716,6 +838,24 @@ def main() -> None:
     ds = build_dataset(args.start, args.end, args.universe, tickers)  # downloaded once, cached
     if not ds["frames"]:
         print("No data downloaded."); return
+
+    if args.portfolio:
+        base = ScanSettings(capital=args.capital, **DEFAULT_ROUTER["bull"][1])
+        counts = [2, 3, 4, 5, 6, 8] if args.sweep_positions else [base.max_concurrent_positions]
+        print(f"\n=== Portfolio sim | leader_pullback bull leg | start ${args.capital:,.0f} | {ds['names']} names | {bps}bps | {args.start} -> {args.end} ===")
+        print(f"per-position cap {base.max_alloc_pct}% · risk {base.risk_pct}% · trail {base.atr_stop_mult}xATR · max-hold {args.max_hold}d")
+        print(f"\n{'maxPos':>7}{'finalEq':>12}{'return%':>9}{'maxDD%':>8}{'Sharpe':>8}{'trades':>8}{'win%':>7}{'expR':>8}")
+        for kpos in counts:
+            r = run_portfolio(ds, base, kpos, args.start, args.end, args.max_hold, bps, "leader_pullback",
+                              regime_match="bull")
+            print(f"{r['max_positions']:>7}{r['final_equity']:>12,.0f}{r['return_pct']:>+9.1f}{r['max_drawdown_pct']:>8.1f}"
+                  f"{r['sharpe']:>8.2f}{r['trades']:>8}{r['win_rate']:>7}{r['expectancy_r']:>+8.3f}")
+        print("\n*** EXPERIMENTAL — DO NOT TRUST THESE NUMBERS YET ***")
+        print("This sim does NOT reconcile with the per-trade backtest: unconstrained (infinite cash, no")
+        print("cap) it should reproduce the per-trade expR (+0.072R) but returns ~-0.01R, so there is an")
+        print("aggregation bug. Single-ticker runs DO reconcile, so the exit logic is fine — the bug is in")
+        print("the cross-universe loop. Needs a focused debug pass before any conclusion is drawn.")
+        return
 
     if args.trail_sweep:
         rows = sweep_trail(ds, args.split, args.capital, bps, max_hold=args.max_hold)
