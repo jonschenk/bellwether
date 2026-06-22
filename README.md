@@ -123,3 +123,7 @@ FastAPI backend
 ## What this is not
 
 This is a research and decision-support tool. It finds, analyzes, and paper-trades setups so you can study them and build a track record. It does not place real-money trades, it does not connect to a live brokerage to move money, and a human approves every proposed trade. It is not financial advice. Market data is from a free, unofficial source and will occasionally rate-limit or error, in which case you just run the scan again. Do your own homework before putting real money at risk.
+
+## Credits
+
+The app icon uses the bell from [Google's Noto Emoji](https://github.com/googlefonts/noto-emoji), licensed under Apache 2.0.
