@@ -179,9 +179,9 @@ function equityChart(rows, trades, start) {
       <path d="${line}" fill="none" stroke="${stroke}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
       ${marks}
     </svg>
-    <div class="row small" style="margin-top:5px;gap:9px">
+    <div class="spread small" style="margin-top:5px">
       <span class="muted">${rows[0].date} → ${rows[last].date}</span>
-      <span class="muted">▲ entry</span><span class="pos">● win</span><span class="neg">● loss</span>
+      <span class="row" style="gap:9px"><span class="muted">▲ entry</span><span class="pos">● win</span><span class="neg">● loss</span></span>
     </div></div>`;
 }
 
@@ -197,11 +197,11 @@ function render(regime, engine, acct, journal, queue, notes, events, settings, e
     const last = engine.last_run ? new Date(engine.last_run).toLocaleTimeString() : "·";
     html += `<div class="card"><div class="spread"><h2 style="margin:0">Alert engine</h2>
       <span class="pill ${on?'bull':'unknown'}" style="font-size:11px">${on ? "ON" : "OFF"}</span></div>
-      <div class="row small" style="margin-top:8px">
-        <span class="muted">${status}</span><span class="muted">·</span>
-        <span>${mode}</span><span class="muted">·</span>
+      <div class="spread small" style="margin-top:8px">
+        <span class="muted">${status}</span>
+        <span>${mode}</span>
         <span class="muted">last ${last}</span>
-        ${engine.last_status==="auto-traded"?`<span class="muted">·</span><span>opened ${engine.last_new_count}</span>`:""}
+        ${engine.last_status==="auto-traded"?`<span>opened ${engine.last_new_count}</span>`:""}
       </div></div>`;
   }
 
@@ -217,9 +217,9 @@ function render(regime, engine, acct, journal, queue, notes, events, settings, e
         <span class="${acct.open_pnl>=0?'pos':'neg'}"><span class="lab">Open</span>${signed(acct.open_pnl)}</span>
         <span class="${acct.realized_pnl>=0?'pos':'neg'}"><span class="lab">Realized</span>${signed(acct.realized_pnl)}</span>
       </div>
-      <div class="row small" style="margin-top:8px">
+      <div class="spread small" style="margin-top:8px">
         <span class="pill ${full?'chop':'bull'}" style="font-size:11px">${used}/${maxPos} slots</span>
-        ${full ? `<span class="muted">fully invested</span>` : `<span class="pos">${maxPos-used} free</span><span class="muted">·</span><span class="muted">$${fmt(acct.cash)} to deploy</span>`}
+        ${full ? `<span class="muted">fully invested</span>` : `<span class="row" style="gap:6px"><span class="pos">${maxPos-used} free</span><span class="muted">·</span><span class="muted">$${fmt(acct.cash)} to deploy</span></span>`}
       </div>`;
     if (acct.positions && acct.positions.length) {
       html += `<table style="margin-top:10px"><thead><tr><th>Ticker</th><th>Now</th><th>P&L</th><th>R</th><th></th></tr></thead><tbody>`;
