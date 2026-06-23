@@ -47,6 +47,23 @@ def _today_trades(today: str) -> tuple[list, list]:
     return opened, closed
 
 
+def _slot_note(acct: dict) -> str:
+    """Factual one-liner on equity-scaled position capacity + distance to the next slot (or ceiling).
+    Informational only — the note stays non-prescriptive; this just states what the rule currently allows."""
+    try:
+        from .config import load_settings
+        s = load_settings()
+        slots, equity = acct.get("slots"), acct.get("equity") or 0
+        if slots is None:
+            return ""
+        if slots >= s.max_concurrent_positions:
+            return f"{slots} slots — at the ceiling ({s.max_concurrent_positions}); capacity won't grow with equity from here."
+        next_at = (slots + 1 - s.position_slot_base) * s.capital_per_slot
+        return f"{slots} slots at this equity; the next unlocks at ${next_at:,.0f} (${next_at - equity:,.0f} away)."
+    except Exception:
+        return ""
+
+
 def _build_prompt(today: str, regime: str | None, acct: dict, equity_tail: list,
                   opened: list, closed: list) -> str:
     def trade_line(t):
@@ -70,6 +87,7 @@ validated regime router: bull → leader-pullback, chop → mean-reversion, bear
 Date: {today}. Regime today: {regime or 'unknown'}.
 Account: equity ${acct.get('equity')} (started ${acct.get('starting_cash')}), cash ${acct.get('cash')}, \
 open P&L {acct.get('open_pnl')}, realized {acct.get('realized_pnl')}.
+Position capacity: {_slot_note(acct) or 'n/a'}
 Equity (recent days): {eq}
 
 OPENED TODAY ({len(opened)}):
@@ -88,6 +106,9 @@ Write a SHORT daily note in markdown (~120–220 words):
 - You may flag patterns to WATCH, but you MUST NOT make strategy recommendations or change orders: the
   sample here is tiny and statistically meaningless this early, so any such call would be noise. Stay
   sample-aware. If little happened, say so briefly. Be honest and plain — no hype, no false confidence.
+- Position capacity scales with equity by a FIXED rule (shown above). You MAY note it as a plain FACT when
+  it just changed or is close to a threshold (e.g. "equity crossed $2k, so capacity is now 5 slots"). Do
+  NOT frame it as advice, a target, or something to act on — it's automatic; you're only observing it.
 
 Do NOT add a title or top header line (a date header is added for you). Start directly with the note.
 Use short paragraphs and at most a couple of "**bold**" sub-labels or "-" bullets — keep it scannable."""
@@ -131,6 +152,7 @@ async def maybe_generate_eod() -> None:
         DAILY_DIR.mkdir(parents=True, exist_ok=True)
         header = (f"# Daily note — {today}\n\n"
                   f"_regime {regime_label or '—'} · equity ${acct.get('equity')} · "
+                  f"{acct.get('slots', '?')} slots · "
                   f"{len(opened)} opened · {len(closed)} closed · {model} ${cost}_\n\n")
         note_path.write_text(header + body + "\n")
         log.info("daily note written for %s ($%s)", today, cost)
