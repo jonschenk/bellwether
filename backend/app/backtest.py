@@ -887,7 +887,7 @@ def main() -> None:
                                  args.max_hold, "mean_reversion", bps)
 
         print(f"\n=== Regime router | {ds['names']} names | {bps}bps slippage | {args.start} -> {args.end} ===")
-        print(f"Policy: bull->leader_pullback  chop->mean_reversion  bear->CASH")
+        print("Policy: bull->leader_pullback  chop->mean_reversion  bear->CASH")
         print(f"Regime days: {counts.get('all', {})}")
         print(f"\n{'':<34}{'trades':>6}{'win%':>7}{'expR':>9}{'PF':>7}{'totR':>9}{'maxDD':>8}")
         print(_line("ROUTER (blended)", router["stats"]))

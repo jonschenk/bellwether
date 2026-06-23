@@ -538,10 +538,6 @@ body {
   border-radius: 7px;
 }
 
-.export-note {
-  color: var(--green);
-}
-
 .btn.export.live-toggle {
   margin-left: auto;
 }
