@@ -120,7 +120,7 @@ let engineState = null;
 
 async function load() {
   try {
-    const [regime, engine, acct, journal, queue, notes, events, settings] = await Promise.all([
+    const [regime, engine, acct, journal, queue, notes, events, settings, equity] = await Promise.all([
       api("/api/regime").catch(()=>({available:false})),
       api("/api/alerts/engine").catch(()=>null),
       api("/api/paper/account").catch(()=>null),
@@ -129,17 +129,64 @@ async function load() {
       api("/api/daily-notes").catch(()=>({notes:[]})),
       api("/api/events?n=16").catch(()=>({events:[]})),
       api("/api/settings").catch(()=>({})),
+      api("/api/equity-log").catch(()=>({rows:[]})),
     ]);
     engineState = engine;
     document.getElementById("offline").style.display = "none";
-    render(regime, engine, acct, journal, queue, notes, events, settings);
+    render(regime, engine, acct, journal, queue, notes, events, settings, equity);
     document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) {
     document.getElementById("offline").style.display = "block";
   }
 }
 
-function render(regime, engine, acct, journal, queue, notes, events, settings) {
+function equityChart(rows, trades, start) {
+  rows = (rows||[]).filter(r => r && r.equity != null);
+  if (rows.length < 2) {
+    const msg = rows.length
+      ? `$${fmt(rows[0].equity)} on ${rows[0].date} — the curve draws once there are a couple of post-close snapshots.`
+      : `Fills in after the first post-close snapshot.`;
+    return `<div class="card"><h2>Equity curve</h2><div class="empty" style="margin-top:8px">${msg}</div></div>`;
+  }
+  const W=320, H=150, padL=8, padR=8, padT=12, padB=18, last=rows.length-1;
+  const eq = rows.map(r=>r.equity);
+  const base = (start!=null) ? start : eq[0];
+  const eqMin = Math.min(...eq, base), eqMax = Math.max(...eq, base), span=(eqMax-eqMin)||1;
+  const lo = eqMin - span*0.08, hi = eqMax + span*0.08, range = hi-lo;
+  const X = i => padL + (i/last) * (W-padL-padR);
+  const Y = v => padT + (1-(v-lo)/range) * (H-padT-padB);
+  const up = eq[last] >= base;
+  const stroke = up ? "var(--green)" : "var(--red)";
+  const baseY = (base>=lo && base<=hi) ? Y(base) : null;
+  const line = rows.map((r,i)=>`${i?'L':'M'}${X(i).toFixed(1)} ${Y(r.equity).toFixed(1)}`).join(' ');
+  const fillBase = baseY!=null ? baseY : (H-padB);
+  const area = `M${X(0).toFixed(1)} ${fillBase.toFixed(1)} `
+    + rows.map((r,i)=>`L${X(i).toFixed(1)} ${Y(r.equity).toFixed(1)}`).join(' ')
+    + ` L${X(last).toFixed(1)} ${fillBase.toFixed(1)} Z`;
+  // map a YYYY-MM-DD to the row index on/just-before it
+  const exact = {}; rows.forEach((r,i)=>{ exact[r.date]=i; });
+  const at = ds => { if(exact[ds]!=null) return exact[ds]; let b=null; for(let i=0;i<rows.length;i++){ if(rows[i].date<=ds) b=i; } return b; };
+  let marks = "";
+  for (const t of (trades||[])) {
+    if (t.opened_at) { const i=at(t.opened_at.slice(0,10)); if(i!=null){ const x=X(i),y=Y(eq[i]); marks += `<path d="M${x.toFixed(1)} ${(y-7).toFixed(1)} l3.4 6 l-6.8 0 Z" fill="var(--accent)" opacity="0.95"/>`; } }
+    if (t.status==='closed' && t.closed_at) { const i=at(t.closed_at.slice(0,10)); if(i!=null){ const x=X(i),y=Y(eq[i]); const c=t.outcome==='win'?'var(--green)':t.outcome==='loss'?'var(--red)':'var(--muted)'; marks += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="${c}"/>`; } }
+  }
+  const cur=eq[last], pnl=cur-base, pct = base?((cur/base-1)*100):0;
+  return `<div class="card"><div class="spread"><h2 style="margin:0">Equity curve</h2>
+    <span class="small ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':''}$${fmt(pnl)} (${pct>=0?'+':''}${pct.toFixed(1)}%)</span></div>
+    <svg viewBox="0 0 ${W} ${H}" width="100%" style="height:auto;display:block;margin-top:8px;overflow:visible">
+      ${baseY!=null?`<line x1="${padL}" y1="${baseY.toFixed(1)}" x2="${W-padR}" y2="${baseY.toFixed(1)}" stroke="var(--border)" stroke-dasharray="3 3" stroke-width="1"/>`:""}
+      <path d="${area}" fill="${stroke}" opacity="0.09"/>
+      <path d="${line}" fill="none" stroke="${stroke}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+      ${marks}
+    </svg>
+    <div class="row small" style="margin-top:5px;gap:9px">
+      <span class="muted">${rows[0].date} → ${rows[last].date}</span>
+      <span class="muted">▲ entry</span><span class="pos">● win</span><span class="neg">● loss</span>
+    </div></div>`;
+}
+
+function render(regime, engine, acct, journal, queue, notes, events, settings, equity) {
   // regime pill
   const rg = document.getElementById("regime");
   if (regime && regime.available) rg.innerHTML = `<span class="pill ${regime.regime}">${regime.label} → ${regime.strategy}</span>`;
@@ -205,6 +252,9 @@ function render(regime, engine, acct, journal, queue, notes, events, settings) {
     }
     html += `</div>`;
   }
+
+  // equity curve — money vs time with entry/exit markers (fills in as post-close snapshots accrue)
+  html += equityChart(equity && equity.rows, journal && journal.trades, acct && acct.starting_cash);
 
   // nightly review queue — the human approves/skips tomorrow's proposed tickets
   if (queue) {
