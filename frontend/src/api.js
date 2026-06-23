@@ -1,5 +1,5 @@
 // When the page is served by the backend over http (the Pi / home server), call the API with
-// same-origin RELATIVE urls — so it works at whatever address served the app, no per-device config.
+// same-origin RELATIVE urls, so it works at whatever address served the app, no per-device config.
 // In Electron (file://) or the Vite dev server, talk to the local backend directly.
 const BASE_URL =
   import.meta.env.DEV || window.location.protocol === "file:"

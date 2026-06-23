@@ -121,13 +121,13 @@ export default function StockCard({ stock, onAnalyze, onDeepAnalysis, onPaperBuy
         {isMeanrev ? (
           <>
             <div className="stat">
-              <span className="stat-label" title="2-period RSI — the fast oversold trigger. Lower = more washed out.">
+              <span className="stat-label" title="2-period RSI, the fast oversold trigger. Lower = more washed out.">
                 RSI(2)
               </span>
               <span className="stat-value rsi-deep">{stock.rsi2}</span>
             </div>
             <div className="stat">
-              <span className="stat-label" title="How far the price has stretched below its 5-day average — the dip depth (the validated entry lever)">
+              <span className="stat-label" title="How far the price has stretched below its 5-day average, the dip depth (the validated entry lever)">
                 Below 5-SMA
               </span>
               <span className="stat-value">−{stock.stretch_pct}%</span>
@@ -200,7 +200,7 @@ export default function StockCard({ stock, onAnalyze, onDeepAnalysis, onPaperBuy
             <span className="lvl-label">Stop</span>${money(plan.stop)}
           </span>
           <span className="lvl lvl-target">
-            <span className="lvl-label" title={isMeanrev ? "The 5-SMA reversion level — where mean-reversion exits the bounce" : "Profit target"}>
+            <span className="lvl-label" title={isMeanrev ? "The 5-SMA reversion level, where mean-reversion exits the bounce" : "Profit target"}>
               {isMeanrev ? "Target (5-SMA)" : "Target"}
             </span>${money(plan.target)}
           </span>
@@ -235,7 +235,7 @@ export default function StockCard({ stock, onAnalyze, onDeepAnalysis, onPaperBuy
           <div className="card-foot">
             {hasAi ? (
               <span className={`badge confidence-${(ai.confidence ?? "low").toLowerCase()}`}>
-                {ai.confidence ?? "—"} confidence
+                {ai.confidence ?? "·"} confidence
               </span>
             ) : (
               <span className="badge confidence-pending">confidence pending</span>

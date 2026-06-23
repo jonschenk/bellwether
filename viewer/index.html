@@ -18,14 +18,16 @@
   body {
     margin: 0; background: var(--bg); color: var(--text); font-variant-numeric: tabular-nums;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    padding: env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + 24px);
+    padding: env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + 84px);
     text-transform: lowercase;  /* stylistic: lowercase everything */
   }
-  .wrap { max-width: 720px; margin: 0 auto; padding: 14px; }
-  header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
-  header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
-  header h1 { font-size: 17px; font-weight: 700; margin: 0; flex: 1; }
-  .gear { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 8px; padding: 6px 10px; font-size: 15px; cursor: pointer; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 16px 14px 0; }
+  /* floating settings button, always on screen (bottom-right) */
+  .gear { position: fixed; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 16px); z-index: 30;
+          width: 46px; height: 46px; display: flex; align-items: center; justify-content: center;
+          border-radius: 50%; background: var(--raised); border: 1px solid var(--border);
+          color: var(--text); font-size: 19px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.45); }
+  .gear:active { transform: scale(.94); }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 13px 14px; margin-bottom: 12px; }
   .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 9px; font-weight: 600; }
   .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; border-radius: 999px; padding: 4px 11px; border: 1px solid var(--border); }
@@ -90,14 +92,9 @@
 </style>
 </head>
 <body>
+<button class="gear" onclick="openDrawer()" aria-label="settings">⚙</button>
 <div class="wrap">
-  <header>
-    <span class="dot"></span>
-    <span style="flex:1"></span>
-    <span id="regime"></span>
-    <button class="gear" onclick="openDrawer()">⚙</button>
-  </header>
-  <div id="offline" class="offline" style="display:none">Can't reach the backend — retrying…</div>
+  <div id="offline" class="offline" style="display:none">Can't reach the backend, retrying…</div>
   <div id="content"></div>
   <div class="updated" id="updated"></div>
 </div>
@@ -112,7 +109,7 @@
 </div>
 
 <script>
-const fmt = (n, d=2) => (typeof n === "number" ? n.toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d}) : "—");
+const fmt = (n, d=2) => (typeof n === "number" ? n.toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d}) : "·");
 const signed = (n) => (n>=0?"+":"−") + "$" + fmt(Math.abs(n));
 async function api(path, opts) { const r = await fetch(path, opts ? {headers:{"Content-Type":"application/json"},...opts} : undefined); if(!r.ok) throw new Error(r.status); return r.json(); }
 
@@ -144,7 +141,7 @@ function equityChart(rows, trades, start) {
   rows = (rows||[]).filter(r => r && r.equity != null);
   if (rows.length < 2) {
     const msg = rows.length
-      ? `$${fmt(rows[0].equity)} on ${rows[0].date} — the curve draws once there are a couple of post-close snapshots.`
+      ? `$${fmt(rows[0].equity)} on ${rows[0].date}, the curve draws once there are a couple of post-close snapshots.`
       : `Fills in after the first post-close snapshot.`;
     return `<div class="card"><h2>Equity curve</h2><div class="empty" style="margin-top:8px">${msg}</div></div>`;
   }
@@ -187,20 +184,15 @@ function equityChart(rows, trades, start) {
 }
 
 function render(regime, engine, acct, journal, queue, notes, events, settings, equity) {
-  // regime pill
-  const rg = document.getElementById("regime");
-  if (regime && regime.available) rg.innerHTML = `<span class="pill ${regime.regime}">${regime.label} → ${regime.strategy}</span>`;
-  else rg.innerHTML = `<span class="pill unknown">regime —</span>`;
-
   let html = "";
 
   // engine status
   if (engine) {
     const on = engine.enabled;
     const mode = { auto:"Auto-trade (paper)", review:"Review", nightly:"Nightly" }[engine.mode] || engine.mode;
-    const statusMap = { watching:"Watching", "auto-traded":"Auto-trading", built:"Setups proposed", executed:"Morning done", "warming-up":"Open settling", "market-closed":"Market closed", "bear-cash":"Bear — holding cash", error:"Reconnecting", idle:"Idle" };
+    const statusMap = { watching:"Watching", "auto-traded":"Auto-trading", built:"Setups proposed", executed:"Morning done", "warming-up":"Open settling", "market-closed":"Market closed", "bear-cash":"Bear: holding cash", error:"Reconnecting", idle:"Idle" };
     const status = on ? (statusMap[engine.last_status] || "On") : "Off";
-    const last = engine.last_run ? new Date(engine.last_run).toLocaleTimeString() : "—";
+    const last = engine.last_run ? new Date(engine.last_run).toLocaleTimeString() : "·";
     html += `<div class="card"><div class="spread"><h2 style="margin:0">Alert engine</h2>
       <span class="pill ${on?'bull':'unknown'}" style="font-size:11px">${on ? "ON" : "OFF"}</span></div>
       <div class="row small" style="margin-top:8px">
@@ -233,7 +225,7 @@ function render(regime, engine, acct, journal, queue, notes, events, settings, e
         html += `<tr><td class="t">${p.ticker}<div class="muted small">${p.shares} @ $${fmt(p.entry)}${p.trail_stop?` · trail $${fmt(p.trail_stop)}`:""}</div></td>
           <td>$${fmt(p.current)}</td>
           <td class="${p.unrealized>=0?'pos':'neg'}">${signed(p.unrealized)}<div class="small ${p.unrealized>=0?'pos':'neg'}">${p.unrealized_pct>=0?'+':''}${p.unrealized_pct}%</div></td>
-          <td class="${(p.r??0)>=0?'pos':'neg'}">${p.r==null?'—':(p.r>=0?'+':'')+p.r+'R'}</td>
+          <td class="${(p.r??0)>=0?'pos':'neg'}">${p.r==null?'·':(p.r>=0?'+':'')+p.r+'R'}</td>
           <td><button class="act" onclick="closePos('${p.id}','${p.ticker}')">Close</button></td></tr>`;
       }
       html += `</tbody></table>`;
@@ -253,10 +245,10 @@ function render(regime, engine, acct, journal, queue, notes, events, settings, e
     html += `</div>`;
   }
 
-  // equity curve — money vs time with entry/exit markers (fills in as post-close snapshots accrue)
+  // equity curve: money vs time with entry/exit markers (fills in as post-close snapshots accrue)
   html += equityChart(equity && equity.rows, journal && journal.trades, acct && acct.starting_cash);
 
-  // nightly review queue — the human approves/skips tomorrow's proposed tickets
+  // nightly review queue: the human approves/skips tomorrow's proposed tickets
   if (queue) {
     const pend = queue.pending || [];
     const isNightly = engine && engine.mode === "nightly";
@@ -282,7 +274,7 @@ function render(regime, engine, acct, journal, queue, notes, events, settings, e
           </div></div>`;
       }
     } else {
-      html += `<div class="empty">${isNightly?"Nothing to review — the engine proposes after the close.":"No pending alerts."}</div>`;
+      html += `<div class="empty">${isNightly?"Nothing to review yet. the engine proposes after the close.":"No pending alerts."}</div>`;
     }
     if (queue.decided && queue.decided.length) {
       const mk = { executed:["✓ bought","pos"], approved:["✓ approved","pos"], skipped:["skipped","muted"], denied:["✕ skipped","neg"], expired:["expired","muted"] };
@@ -309,8 +301,8 @@ function render(regime, engine, acct, journal, queue, notes, events, settings, e
     if (closed.length) {
       html += `<table style="margin-top:10px"><thead><tr><th>Ticker</th><th>R</th><th>Outcome</th><th>Why</th></tr></thead><tbody>`;
       for (const t of closed) {
-        html += `<tr><td class="t">${t.ticker}</td><td class="${(t.r_multiple??0)>=0?'pos':'neg'}">${t.r_multiple==null?'—':(t.r_multiple>=0?'+':'')+t.r_multiple+'R'}</td>
-          <td class="${t.outcome==='win'?'pos':t.outcome==='loss'?'neg':'muted'}">${t.outcome||'—'}</td><td class="small muted">${t.exit_reason||''}</td></tr>`;
+        html += `<tr><td class="t">${t.ticker}</td><td class="${(t.r_multiple??0)>=0?'pos':'neg'}">${t.r_multiple==null?'·':(t.r_multiple>=0?'+':'')+t.r_multiple+'R'}</td>
+          <td class="${t.outcome==='win'?'pos':t.outcome==='loss'?'neg':'muted'}">${t.outcome||'·'}</td><td class="small muted">${t.exit_reason||''}</td></tr>`;
       }
       html += `</tbody></table>`;
     } else if (!vids.length) {
@@ -331,7 +323,7 @@ function render(regime, engine, acct, journal, queue, notes, events, settings, e
     html += `<div class="card"><h2>Daily note · ${latest.date}</h2><div class="note-body">${md}</div></div>`;
   }
 
-  // engine activity — the audit trail of every move (regime, scan, propose, review, execute, skip)
+  // engine activity: the audit trail of every move (regime, scan, propose, review, execute, skip)
   if (events && events.events && events.events.length) {
     html += `<div class="card"><h2>Engine activity</h2>`;
     for (const e of events.events.slice(0,16)) {

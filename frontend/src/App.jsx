@@ -47,7 +47,7 @@ function formatClock(epochSeconds) {
   return new Date(epochSeconds * 1000).toLocaleTimeString();
 }
 
-// Client-side CSV export of the journal — portable, hand back to Claude for analysis.
+// Client-side CSV export of the journal, portable, hand back to Claude for analysis.
 function exportJournalCsv(trades) {
   if (!trades?.length) return;
   const cols = [
@@ -71,13 +71,13 @@ function exportJournalCsv(trades) {
 
 // Dollar formatter for the paper book (always 2 decimals, thousands separators).
 function usd(n) {
-  if (typeof n !== "number") return "—";
+  if (typeof n !== "number") return "·";
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // Plain-English status line for the alert engine.
 function engineStatusText(e) {
-  if (!e?.enabled) return "Off — turn on to auto-scan during market hours.";
+  if (!e?.enabled) return "Off, turn on to auto-scan during market hours.";
   const auto = e.mode === "auto";
   const strat = { leader_pullback: "leader-pullback", mean_reversion: "mean-reversion", cash: "cash" }[e.last_strategy] || e.last_strategy;
   const ran = e.last_run ? ` · last ran ${new Date(e.last_run).toLocaleTimeString()}` : "";
@@ -91,9 +91,9 @@ function engineStatusText(e) {
     case "market-closed":
       return `On · waiting for the market to open (9:30–16:00 ET, Mon–Fri)${auto ? " · will auto-trade (paper)" : ""}`;
     case "bear-cash":
-      return `On · Bear regime — holding cash, doing nothing${ran}`;
+      return `On · Bear regime, holding cash, doing nothing${ran}`;
     case "error":
-      return "On · couldn’t read the market just now — retrying";
+      return "On · couldn’t read the market just now, retrying";
     default:
       return "On · first scan pending";
   }
@@ -199,7 +199,7 @@ export default function App() {
   const analyzing = scan.status === "analyzing"; // cards shown, AI streaming in
   const busy = running || analyzing;
 
-  // Live elapsed clock — ticks while the scan or AI phase is working.
+  // Live elapsed clock, ticks while the scan or AI phase is working.
   useEffect(() => {
     if (!busy) return;
     setNow(Date.now() / 1000);
@@ -536,7 +536,7 @@ export default function App() {
     (a, b) => (a.recommendation?.rank ?? Infinity) - (b.recommendation?.rank ?? Infinity),
   );
 
-  // Signature of the tickers on screen — re-subscribe the stream when it changes.
+  // Signature of the tickers on screen, re-subscribe the stream when it changes.
   const tickerKey = results.map((r) => r.ticker).join(",");
 
   // Stream live prices for the displayed cards: subscribe the backend to them,
@@ -620,7 +620,7 @@ export default function App() {
           )}
         </div>
         <div className="topbar-actions">
-          <label className="capital-input" title="Your trading capital — drives position sizing and the price ceiling">
+          <label className="capital-input" title="Your trading capital, drives position sizing and the price ceiling">
             <span>$</span>
             <input
               type="number"
@@ -662,14 +662,14 @@ export default function App() {
           <button
             className={`btn ghost ${showQueue ? "active" : ""}`}
             onClick={() => setShowQueue((v) => !v)}
-            title="Review queue — proposed trade tickets you approve (paper buy) or deny"
+            title="Review queue, proposed trade tickets you approve (paper buy) or deny"
           >
             ✅ Review{pendingCount ? ` (${pendingCount})` : ""}
           </button>
           <button
             className={`btn ghost ${showStrategy ? "active" : ""}`}
             onClick={() => setShowStrategy((v) => !v)}
-            title={`Strategy variations — pick which tuned parameter set the scan runs under${activeVariation ? ` (active: ${activeVariation.name})` : ""}`}
+            title={`Strategy variations, pick which tuned parameter set the scan runs under${activeVariation ? ` (active: ${activeVariation.name})` : ""}`}
           >
             🎛 Strategy
           </button>
@@ -729,7 +729,7 @@ export default function App() {
 
       {backendUp === false && (
         <div className="banner error">
-          Can't reach the backend at 127.0.0.1:8765 — start it and relaunch the app.
+          Can't reach the backend at 127.0.0.1:8765, start it and relaunch the app.
         </div>
       )}
       {error && <div className="banner error">{error}</div>}
@@ -781,7 +781,7 @@ export default function App() {
           <button
             className={`btn export ${showHoldings ? "on" : ""}`}
             onClick={() => setShowHoldings((v) => !v)}
-            title="Your open positions — fed to Deep analysis so it can weigh portfolio fit"
+            title="Your open positions, fed to Deep analysis so it can weigh portfolio fit"
           >
             Holdings{holdings.trim() ? ` (${parseHoldings(holdings).length})` : ""}
           </button>
@@ -814,7 +814,7 @@ export default function App() {
       {scan.status === "done" && results.length > 0 && showHoldings && (
         <div className="holdings-panel">
           <label className="holdings-label muted small">
-            Your open positions — one per line as <code>TICKER SHARES [SECTOR]</code>. Deep
+            Your open positions, one per line as <code>TICKER SHARES [SECTOR]</code>. Deep
             analysis uses these to judge sector concentration and overlap. (Schwab will fill
             this automatically later.)
           </label>
@@ -858,7 +858,7 @@ export default function App() {
           </div>
           {paper.positions.length === 0 ? (
             <p className="muted small">
-              No open paper positions. Hit "Paper buy" on a card to open one — it fills at the
+              No open paper positions. Hit "Paper buy" on a card to open one, it fills at the
               live price and auto-closes when it hits your stop or target.
             </p>
           ) : (
@@ -880,7 +880,7 @@ export default function App() {
                       {p.unrealized >= 0 ? "+" : "−"}${usd(Math.abs(p.unrealized))} ({p.unrealized_pct >= 0 ? "+" : ""}{p.unrealized_pct}%)
                     </td>
                     <td className={(p.r ?? 0) >= 0 ? "pos" : "neg"}>
-                      {p.r == null ? "—" : `${p.r >= 0 ? "+" : ""}${p.r}R`}
+                      {p.r == null ? "·" : `${p.r >= 0 ? "+" : ""}${p.r}R`}
                     </td>
                     <td>${usd(p.stop)}</td>
                     <td>${usd(p.target)}</td>
@@ -896,7 +896,7 @@ export default function App() {
           {paper.orders?.length > 0 && (
             <>
               <div className="muted small" style={{ margin: "12px 0 4px" }}>
-                Resting orders ({paper.orders.length}) — fill when their condition is met
+                Resting orders ({paper.orders.length}), fill when their condition is met
               </div>
               <table className="paper-table">
                 <thead>
@@ -976,12 +976,12 @@ export default function App() {
                       <td>{t.variation_id}</td>
                       <td>${usd(t.entry)} → ${usd(t.exit)}</td>
                       <td className={(t.r_multiple ?? 0) >= 0 ? "pos" : "neg"}>
-                        {t.r_multiple == null ? "—" : `${t.r_multiple >= 0 ? "+" : ""}${t.r_multiple}R`}
+                        {t.r_multiple == null ? "·" : `${t.r_multiple >= 0 ? "+" : ""}${t.r_multiple}R`}
                       </td>
                       <td className={t.outcome === "win" ? "pos" : t.outcome === "loss" ? "neg" : ""}>{t.outcome}</td>
                       <td>{t.exit_reason}</td>
                       <td>{t.hold_days}</td>
-                      <td className="muted">{t.market_regime || "—"}</td>
+                      <td className="muted">{t.market_regime || "·"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1008,7 +1008,7 @@ export default function App() {
 
           {alertEngine && (
             <div className="alert-engine-row">
-              <label className="engine-toggle" title="Auto-scan during market hours, honouring the regime (bull→leader, chop→mean-reversion, bear→cash). Review mode queues setups for your approval; Auto-trade mode auto-opens PAPER positions — paper only, never a real order.">
+              <label className="engine-toggle" title="Auto-scan during market hours, honouring the regime (bull→leader, chop→mean-reversion, bear→cash). Review mode queues setups for your approval; Auto-trade mode auto-opens PAPER positions, paper only, never a real order.">
                 <input
                   type="checkbox"
                   checked={!!alertEngine.enabled}
@@ -1041,7 +1041,7 @@ export default function App() {
                   className={`seg-btn ${alertEngine.mode === "auto" ? "active" : ""}`}
                   disabled={!alertEngine.enabled}
                   onClick={() => onSetEngineMode("auto")}
-                  title="Auto-open PAPER positions for qualifying setups (paper only — never a real order)"
+                  title="Auto-open PAPER positions for qualifying setups (paper only, never a real order)"
                 >
                   Auto-trade (paper)
                 </button>
@@ -1086,7 +1086,7 @@ export default function App() {
                       {p.ticker}
                       {p.regime && <span className="muted small"> · {p.regime}</span>}
                       {p.earnings_soon && (
-                        <span className="queue-earnings" title="Earnings inside the hold window — gap risk">
+                        <span className="queue-earnings" title="Earnings inside the hold window, gap risk">
                           {" "}⚠ ER {p.days_to_earnings}d
                         </span>
                       )}
@@ -1096,7 +1096,7 @@ export default function App() {
                         {p.strategy === "mean_reversion" ? "🔄 Mean-rev" : "📈 Leader"}
                       </span>
                     </td>
-                    <td>{p.call ? <span className={`badge rec-${p.call.toLowerCase()}`}>{p.call}</span> : <span className="muted">—</span>}</td>
+                    <td>{p.call ? <span className={`badge rec-${p.call.toLowerCase()}`}>{p.call}</span> : <span className="muted">·</span>}</td>
                     <td>
                       ${usd(p.plan?.entry)} → <span className="neg">${usd(p.plan?.stop)}</span> →{" "}
                       <span className="pos">${usd(p.plan?.target)}</span>
@@ -1147,7 +1147,7 @@ export default function App() {
                 const target =
                   p.reward_mult != null
                     ? `${p.reward_mult}R${p.cap_target_at_high === false ? " uncapped" : ""}`
-                    : "—";
+                    : "·";
                 return (
                   <tr key={v.id} title={v.notes}>
                     <td>{isActive ? <span className="strat-active-dot" /> : null}</td>
@@ -1156,9 +1156,9 @@ export default function App() {
                       {v.id === activeVariation?.id && <span className="muted small"> · {v.id}</span>}
                     </td>
                     <td>{target}</td>
-                    <td>{p.adx_min ?? "—"}</td>
-                    <td>{p.min_rs_rating ?? "—"}</td>
-                    <td>{p.rsi_floor != null ? `${p.rsi_floor}–${p.rsi_threshold}` : "—"}</td>
+                    <td>{p.adx_min ?? "·"}</td>
+                    <td>{p.min_rs_rating ?? "·"}</td>
+                    <td>{p.rsi_floor != null ? `${p.rsi_floor}–${p.rsi_threshold}` : "·"}</td>
                     <td>
                       {isActive ? (
                         <span className="strat-active-tag">Active</span>
@@ -1193,20 +1193,20 @@ export default function App() {
             <div className={`regime-note regime-note-${noteClass}`}>
               {regime.regime === "bear" ? (
                 <>
-                  <strong>Downtrend.</strong> The validated router would be in <strong>cash</strong> today —
+                  <strong>Downtrend.</strong> The validated router would be in <strong>cash</strong> today,
                   both strategies bleed in bear markets. These {scannedLabel} are shown for awareness,
                   not as a call to act.
                 </>
               ) : onRegime ? (
                 <>
-                  <strong>{regime.label} market.</strong> You're scanning {scannedLabel} — the router's
+                  <strong>{regime.label} market.</strong> You're scanning {scannedLabel}, the router's
                   active strategy for this regime. On-regime.
                 </>
               ) : (
                 <>
                   <strong>{regime.label} market.</strong> The router would scan{" "}
                   {routerPick === "mean_reversion" ? "mean-reversion dips" : "leader-pullback momentum"} here.
-                  These {scannedLabel} are off-regime — switch above, or size down.
+                  These {scannedLabel} are off-regime, switch above, or size down.
                 </>
               )}
             </div>
