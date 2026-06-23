@@ -1,22 +1,22 @@
-"""Generate the Bellwether app icon: the Noto Emoji bell (U+1F514) centered on the app's dark
-gradient squircle, with a soft glow and a top sheen so it reads as a polished app icon rather
-than a floating emoji. Rendered at 2x and downscaled for crisp edges. Outputs icon_1024.png and
-icon.ico.
+"""Generate the Bellwether app icon: a minimalist line-art bell (thin outline, no fill) centered on
+the app's dark gradient squircle, with a faint glow so the stroke reads on the dark background and a
+subtle top sheen. Rendered at 2x and downscaled for crisp edges. Outputs icon_1024.png and icon.ico.
 
-The bell artwork is Google's Noto Emoji (Apache-2.0, github.com/googlefonts/noto-emoji), saved
-locally as noto_bell_1f514.png so regenerating needs no network. We composite it, we don't ship
-Apple's proprietary emoji."""
+The bell is drawn from scratch with Pillow primitives (a dome + flared skirt outline, a small top
+knob, and a clapper dot) so there is no third-party artwork to ship. (The old Noto emoji bell PNG is
+no longer used.)"""
 
-from pathlib import Path
-
+import math
 from PIL import Image, ImageDraw, ImageFilter
 
 SS = 2          # supersample factor for anti-aliasing
 S = 1024        # final size
 W = S * SS      # working size
 RADIUS = int(W * 0.235)
-EMOJI_FILE = Path(__file__).with_name("noto_bell_1f514.png")
-EMOJI_FRAC = 0.62   # emoji width as a fraction of the icon (the rest is padding)
+CX = W / 2
+
+INK = (237, 241, 248, 255)   # near-white stroke
+STROKE = int(W * 0.016)      # thin, minimalist line weight
 
 
 def lerp(a, b, t):
@@ -33,6 +33,33 @@ def vgradient(size, top, bottom):
     return g
 
 
+def bell_outline():
+    """Closed point path for the bell body: dome over the top, sides flaring to the rim, rim arc."""
+    y_dome_top, y_neck, y_rim = 0.31 * W, 0.37 * W, 0.655 * W
+    hw_neck, hw_rim = 0.118 * W, 0.206 * W
+    bow = 0.018 * W
+    DN, SN, RN = 48, 40, 40
+    pts = []
+    # dome: left neck, over the top, to right neck
+    for i in range(DN + 1):
+        a = math.pi * (1 - i / DN)
+        pts.append((CX + hw_neck * math.cos(a), y_neck - (y_neck - y_dome_top) * math.sin(a)))
+    # right side: neck down to rim, flaring (power eases the flare toward the bottom)
+    for i in range(1, SN + 1):
+        t = i / SN
+        pts.append((CX + hw_neck + (hw_rim - hw_neck) * (t ** 1.5), y_neck + (y_rim - y_neck) * t))
+    # rim: right to left, bowed gently downward
+    for i in range(1, RN + 1):
+        t = i / RN
+        pts.append(((CX + hw_rim) - 2 * hw_rim * t, y_rim + bow * math.sin(math.pi * t)))
+    # left side: rim back up to neck
+    for i in range(1, SN):
+        t = 1 - i / SN
+        pts.append((CX - (hw_neck + (hw_rim - hw_neck) * (t ** 1.5)), y_neck + (y_rim - y_neck) * t))
+    pts.append(pts[0])
+    return pts, y_dome_top, y_rim
+
+
 # ---- background squircle ----
 bg = vgradient((W, W), (34, 46, 72), (9, 12, 19))
 mask = Image.new("L", (W, W), 0)
@@ -40,21 +67,24 @@ ImageDraw.Draw(mask).rounded_rectangle([0, 0, W - 1, W - 1], radius=RADIUS, fill
 img = Image.new("RGBA", (W, W), (0, 0, 0, 0))
 img.paste(bg, (0, 0), mask)
 
-# ---- the bell emoji, scaled + centred ----
-emoji = Image.open(EMOJI_FILE).convert("RGBA")
-target_w = int(W * EMOJI_FRAC)
-target_h = int(target_w * emoji.height / emoji.width)
-emoji = emoji.resize((target_w, target_h), Image.LANCZOS)
-ex = (W - target_w) // 2
-ey = (W - target_h) // 2 - int(W * 0.012)  # nudge up a touch (optical centring)
+# ---- the bell outline (own layer, so we can lay a soft glow under it) ----
+pts, y_dome_top, y_rim = bell_outline()
+bell = Image.new("RGBA", (W, W), (0, 0, 0, 0))
+bd = ImageDraw.Draw(bell)
+bd.line(pts, fill=INK, width=STROKE, joint="curve")
+# small knob at the very top
+kr = int(W * 0.026)
+bd.ellipse([CX - kr, y_dome_top - kr * 1.4, CX + kr, y_dome_top + kr * 0.6], fill=INK)
+# clapper dot below the rim
+cr = int(W * 0.032)
+ccy = y_rim + 0.052 * W
+bd.ellipse([CX - cr, ccy - cr, CX + cr, ccy + cr], fill=INK)
 
-emoji_layer = Image.new("RGBA", (W, W), (0, 0, 0, 0))
-emoji_layer.paste(emoji, (ex, ey), emoji)
-
-# soft glow (blurred copy underneath) for depth on the dark squircle
-glow = emoji_layer.filter(ImageFilter.GaussianBlur(int(W * 0.013)))
+# faint halo only (keeps the line crisp / minimalist, not neon) — just enough to lift it off the dark
+glow = bell.filter(ImageFilter.GaussianBlur(int(W * 0.007)))
+glow.putalpha(glow.split()[3].point(lambda a: int(a * 0.4)))
 img.alpha_composite(glow)
-img.alpha_composite(emoji_layer)
+img.alpha_composite(bell)
 
 # ---- subtle top sheen for depth ----
 sheen = Image.new("RGBA", (W, W), (0, 0, 0, 0))
