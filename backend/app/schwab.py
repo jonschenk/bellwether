@@ -18,7 +18,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlparse, parse_qs
 
@@ -276,7 +276,14 @@ def get_portfolio() -> dict:
 
     raw_orders = []
     try:
-        raw_orders = _get(f"/accounts/{account_hash}/orders", params={"maxResults": 100}) or []
+        # Schwab's /orders endpoint REQUIRES an entered-time range (ISO-8601, ms + Z); maxResults
+        # alone returns 400. Look back 90 days, which covers recent fills for entry-date inference.
+        now = datetime.now(timezone.utc)
+        raw_orders = _get(f"/accounts/{account_hash}/orders", params={
+            "maxResults": 100,
+            "fromEnteredTime": (now - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "toEnteredTime": now.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        }) or []
     except Exception:
         log.exception("Failed to fetch Schwab orders")
     orders = _parse_orders(raw_orders)
