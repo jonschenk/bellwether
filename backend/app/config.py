@@ -23,7 +23,14 @@ class ScanSettings(BaseModel):
     # were free for EACH entry). max_alloc_pct caps any one position's COST as % of equity (lets a
     # small account hold several names + stops one tight-stop pick eating the whole book).
     max_alloc_pct: float = Field(default=30.0, gt=0, le=100)
-    max_concurrent_positions: int = Field(default=4, ge=1, le=50)  # breadth cap (Fundamental Law: breadth extracts a modest edge)
+    # Concurrent-position count scales with ACCOUNT EQUITY (not free cash — sizing off idle cash would
+    # push the system to manufacture trades to stay invested). slots = position_slot_base + floor(equity /
+    # capital_per_slot), clamped to [1, max_concurrent_positions]. See risk.target_slots. Defaults give the
+    # historical 4 at ~$1k and grow toward the ceiling as the account compounds (Fundamental Law: breadth
+    # extracts a modest edge, but a tiny account spread too thin just pays slippage).
+    max_concurrent_positions: int = Field(default=6, ge=1, le=50)  # HARD CEILING (backtest breadth plateaus ~4-5; 6 leaves headroom without overclaiming)
+    position_slot_base: int = Field(default=3, ge=1, le=50)         # slots at small accounts (ramp floor)
+    capital_per_slot: float = Field(default=1000.0, gt=0)          # +1 slot per this much equity above the base
     atr_stop_mult: float = Field(default=1.5, gt=0)  # stop = entry - mult * ATR
     reward_mult: float = Field(default=2.0, gt=0)  # target = entry + mult * stop distance
     cap_target_at_high: bool = Field(default=True)  # cap the target at the 52w high (off = pure R:R)

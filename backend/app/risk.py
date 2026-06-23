@@ -150,6 +150,20 @@ def resize_for_budget(plan: dict, settings: ScanSettings, equity: float,
     }
 
 
+def target_slots(equity: float, settings: ScanSettings) -> int:
+    """How many concurrent positions the account should run, scaled by EQUITY (deterministic +
+    backtestable). base + 1 slot per `capital_per_slot` of equity, clamped to [1, max_concurrent_positions].
+
+    Equity, NOT free cash, is the driver on purpose: sizing off idle cash would nudge the system to
+    manufacture trades just to stay invested (a classic way to bleed an account). With the defaults
+    (base 3, $1k/slot, ceiling 8) this yields the historical 4 at ~$1k and grows as the account compounds.
+    A drawdown below a $1k boundary de-risks by one slot; it only gates NEW entries, never closes a held one.
+    (Backtest breadth plateaus ~4-5, so the ceiling is a conservative 6 — re-tune from real paper data.)"""
+    step = settings.capital_per_slot
+    extra = int(equity // step) if step > 0 else 0
+    return max(1, min(settings.max_concurrent_positions, settings.position_slot_base + extra))
+
+
 def allocate(rows: list[dict], settings: ScanSettings, equity: float, cash: float,
              max_positions: int | None = None) -> tuple[list[dict], list[dict]]:
     """Budget-aware portfolio allocation across a RANKED batch of picks (best first). Walks the
@@ -157,7 +171,7 @@ def allocate(rows: list[dict], settings: ScanSettings, equity: float, cash: floa
     to `max_positions`. The highest-conviction picks fill first; anything that no longer fits the
     budget is dropped DETERMINISTICALLY by rank (not by arbitrary cash-exhaustion order). Each row
     must carry a `plan` (from the scan). Returns (taken, dropped); taken rows get the re-sized plan."""
-    cap = max_positions if max_positions is not None else settings.max_concurrent_positions
+    cap = max_positions if max_positions is not None else target_slots(equity, settings)
     remaining = cash
     taken, dropped = [], []
     for r in rows:

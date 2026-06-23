@@ -616,7 +616,7 @@ async def _nightly_build() -> None:
     settings = load_settings()
     acct = paper.account()
     equity, cash, held = acct.get("equity") or settings.capital, acct.get("cash") or 0.0, len(acct.get("positions", []))
-    free_slots = max(0, settings.max_concurrent_positions - held)
+    free_slots = max(0, risk.target_slots(equity, settings) - held)
     note = None  # why nothing was proposed (for the event/notify line)
     if not rows:
         note = "no setups cleared the scan"
@@ -721,7 +721,7 @@ async def _nightly_morning() -> None:
     # Budget-aware allocation across survivors: conviction order, off REAL cash + the per-position cap,
     # so the picks actually fit the account instead of each being sized as if full cash were free.
     # The breadth cap is on the WHOLE book, so subtract positions already open.
-    free_slots = max(0, settings.max_concurrent_positions - len(acct.get("positions", [])))
+    free_slots = max(0, risk.target_slots(equity, settings) - len(acct.get("positions", [])))
     taken, dropped = risk.allocate(survivors, settings, equity, cash, free_slots)
     for d in dropped:
         sp = next((s for s in survivors if s["ticker"] == d["ticker"]), None)

@@ -167,7 +167,7 @@ function render(regime, engine, acct, journal, queue, notes, events, settings) {
   // account + positions
   if (acct) {
     const tot = acct.total_pnl||0;
-    const maxPos = (settings && settings.max_concurrent_positions) || 4;
+    const maxPos = acct.slots || (settings && settings.max_concurrent_positions) || 4;  // equity-scaled target (backend)
     const used = (acct.positions||[]).length;
     const full = used >= maxPos;
     html += `<div class="card"><h2>Paper account</h2>

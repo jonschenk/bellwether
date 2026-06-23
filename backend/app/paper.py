@@ -212,7 +212,9 @@ def auto_execute(results: list[dict], max_positions: int = 5, exclude: set[str] 
     held = {p["ticker"] for p in acct.get("positions", [])} | {o["ticker"] for o in acct.get("orders", [])}
     open_count = len(acct.get("positions", [])) + len(acct.get("orders", []))
     equity, cash = acct["equity"], acct["cash"]
-    free_slots = max(0, min(max_positions, settings.max_concurrent_positions) - open_count)
+    # Equity-scaled slot count, still under any explicit caller ceiling (the intraday auto-trade knob).
+    cap = min(risk.target_slots(equity, settings), max_positions)
+    free_slots = max(0, cap - open_count)
     skipped: list[dict] = []
 
     # Eligible names (skip held / excluded / earnings-soon / unsizable), ranked by setup score.
@@ -433,6 +435,10 @@ def account() -> dict:
     orders.sort(key=lambda x: x["placed_at"])
     equity = round(acct["cash"] + invested, 2)
     total_pnl = round(equity - acct["starting_cash"], 2) if acct["starting_cash"] else 0.0
+    # Equity-scaled target slot count (single source of truth for the Monitor's "used/N slots").
+    from .config import load_settings
+    from . import risk
+    slots = risk.target_slots(equity, load_settings())
     return {
         "starting_cash": acct["starting_cash"],
         "cash": acct["cash"],
@@ -440,6 +446,7 @@ def account() -> dict:
         "open_pnl": round(open_pnl, 2),
         "realized_pnl": round(total_pnl - open_pnl, 2),  # closed-trade P&L = total minus unrealized
         "total_pnl": total_pnl,
+        "slots": slots,
         "positions": positions,
         "orders": orders,
     }
