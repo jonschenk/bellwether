@@ -192,7 +192,9 @@ async def start_scan(fresh: bool = False, strategy: str = "leader_pullback") -> 
 @app.post("/api/refresh")
 async def refresh_scan() -> dict:
     """Cheap live update of the displayed setups only (no re-scan, no AI)."""
-    if scan_state["status"] == "running" or scan_state["refreshing"]:
+    # Skip during the AI phase too ("analyzing"): rebuilding results here would detach the in-flight
+    # AI mutations from scan_state, so a poller firing mid-analysis would wipe cards' AI blurbs.
+    if scan_state["status"] in ("running", "analyzing") or scan_state["refreshing"]:
         return scan_state
     rows = scan_state.get("results") or []
     if not rows:
