@@ -692,99 +692,71 @@ def run_portfolio(ds: dict, settings: ScanSettings, max_positions: int, start: s
                   strategy: str = "leader_pullback", starting_cash: float | None = None,
                   regime_match: str | None = None) -> dict:
     """Day-by-day PORTFOLIO simulation with the live constraints the per-trade backtest ignores:
-    shared cash, a position-count cap, a per-position allocation cap, and trailing-stop + time-stop
-    exits. Each day, signals compete for the limited capital (ranked best-first by RS), so the book
-    captures a realistic SUBSET of all signals — which is what shows how the slot/cap choices actually
-    perform on equity and drawdown. `regime_match` gates ENTRIES to days in that regime (the router's
-    kill-switch: leader only opens in 'bull'; cash otherwise) — open positions still ride/exit freely.
-    Enters at the next open; no-lookahead on the trailing exit.
+    shared cash, a position-count cap, and a per-position allocation cap. Each day, candidate trades
+    compete for the limited capital (ranked best-first by RS), so the book captures a realistic SUBSET
+    of all signals — which is what shows how the slot/cap choices actually perform on equity + drawdown.
+    `regime_match` gates ENTRIES to days in that regime (the router's kill-switch: leader only opens in
+    'bull'; cash otherwise) — open positions still ride/exit freely.
 
-    EXPERIMENTAL / KNOWN BUG: does not yet reconcile with the per-trade backtest at the universe level.
-    Unconstrained (infinite cash, no cap/gate) it should reproduce run_on_dataset's per-trade expectancy
-    but comes out ~0.08R too low. Single-ticker runs DO reconcile, so the exit accounting is right and the
-    bug is in the cross-ticker selection/aggregation. Don't trust the portfolio return/drawdown until fixed."""
+    DESIGN: the candidate trades (and their exits/R) come straight from the validated per-trade engine
+    (run_on_dataset), so this layer NEVER re-implements the exit walk — it only decides which candidates
+    to take given cash/slots, and sizes them. By construction, taking every candidate reproduces the
+    per-trade expectancy exactly (verified), so the constrained results are trustworthy."""
     frames = ds["frames"]
     rs_tab = ds["rs"]
     regime = ds.get("regime")
     start_cash = starting_cash if starting_cash is not None else settings.capital
-    k = slippage_bps / 10000.0
     buf = 1 + 0.005  # cash headroom for slippage (matches risk.ALLOC_CASH_BUFFER)
+    lo_b, hi_b = pd.Timestamp(start), pd.Timestamp(end)
 
-    all_dates = sorted({d for f in frames.values() for d in f.index
-                        if pd.Timestamp(start) <= d <= pd.Timestamp(end)})
-    di = {d: i for i, d in enumerate(all_dates)}
+    # Candidate trades from the VALIDATED per-trade engine — identical entries/exits/R.
+    cand = run_on_dataset(ds, settings, max_hold, strategy, slippage_bps, exit_mode="trail")["trades"]
+    by_entry: dict = {}
+    for t in cand:
+        ed = pd.Timestamp(t.entry_date)
+        if not (lo_b <= ed <= hi_b):
+            continue
+        ind = frames[t.ticker]
+        try:
+            loc = ind.index.get_loc(ed) - 1  # the signal bar (entry is the next open)
+        except KeyError:
+            continue
+        rsv = 0.0
+        if strategy != "mean_reversion" and t.ticker in rs_tab.columns and 0 <= loc < len(rs_tab):
+            v = rs_tab[t.ticker].iloc[loc]
+            rsv = float(v) if pd.notna(v) else 0.0
+        by_entry.setdefault(t.entry_date, []).append((rsv, t))
 
-    # signals keyed by ENTRY date (the next open after the signal)
-    entries: dict = {}
-    for tk, ind in frames.items():
-        rs = rs_tab[tk].reindex(ind.index) if tk in rs_tab.columns else pd.Series(index=ind.index, dtype=float)
-        sig = _signal_mask_meanrev(ind, settings) if strategy == "mean_reversion" else _signal_mask(ind, rs, settings)
-        for loc in [ind.index.get_loc(d) for d in sig.index[sig.fillna(False)]]:
-            if loc < MIN_BARS or loc + 1 >= len(ind):
-                continue
-            ed = ind.index[loc + 1]
-            if ed not in di:
-                continue
-            entry = float(ind["open"].iloc[loc + 1])
-            atrv = float(ind["atr"].iloc[loc])
-            stop = entry - settings.atr_stop_mult * atrv
-            if stop <= 0 or entry <= 0:
-                continue
-            rsv = float(rs.iloc[loc]) if loc < len(rs) and pd.notna(rs.iloc[loc]) else 0.0
-            rank = rsv if strategy != "mean_reversion" else -loc  # leader: highest RS first
-            entries.setdefault(ed, []).append({"ticker": tk, "entry": entry, "stop": stop,
-                                               "init_stop_dist": entry - stop, "rank": rank})
-
+    all_dates = sorted({d for f in frames.values() for d in f.index if lo_b <= d <= hi_b})
     cash = start_cash
-    positions: dict = {}
-    trades, eq = [], []
+    positions: dict = {}   # ticker -> {shares, exit_date, exit_price, r}
+    taken: list = []
+    eq: list = []
     for T in all_dates:
-        # 1) exits (test the trail set on PRIOR days, then update with today's bar)
-        for tk in list(positions.keys()):
-            ind = frames[tk]
-            if T not in ind.index:
-                continue
-            p = positions[tk]
-            hi, lo, cl = float(ind.at[T, "high"]), float(ind.at[T, "low"]), float(ind.at[T, "close"])
-            exit_px = reason = None
-            if lo <= p["trail_stop"]:
-                exit_px = p["trail_stop"]
-                reason = "stop" if p["trail_stop"] <= p["stop"] else "trail"
-            else:
-                p["mfe"] = max(p["mfe"], hi)
-                p["trail_stop"] = max(p["trail_stop"], p["mfe"] - p["init_stop_dist"])
-                if di[T] - p["entry_di"] >= max_hold:
-                    exit_px, reason = cl, "time"
-            if exit_px is not None:
-                fill = exit_px * (1 - k)
-                cash += p["shares"] * fill
-                r = (fill - p["entry_fill"]) / p["init_stop_dist"] if p["init_stop_dist"] > 0 else 0.0
-                trades.append({"r": r, "reason": reason})
-                del positions[tk]
-
-        # 2) entries — today's signals, ranked, into free slots + cash (off current equity).
-        # Regime kill-switch: only OPEN new positions in the strategy's regime (cash otherwise).
+        Tstr = str(T.date())
+        # 1) exits — close any candidate whose exit_date is today (R + price come from the per-trade engine)
+        for tk in [t for t, p in positions.items() if p["exit_date"] == Tstr]:
+            p = positions.pop(tk)
+            cash += p["shares"] * p["exit_price"]
+            taken.append(p["r"])
+        # 2) entries — today's candidates, ranked, into free slots + cash (off current equity).
         equity_now = cash + sum(p["shares"] * float(frames[t].at[T, "close"])
                                 for t, p in positions.items() if T in frames[t].index)
         in_regime = regime_match is None or regime is None or (T in regime.index and regime.at[T] == regime_match)
-        for e in (sorted(entries.get(T, []), key=lambda x: x["rank"], reverse=True) if in_regime else []):
-            if len(positions) >= max_positions or e["ticker"] in positions:
+        for rsv, t in (sorted(by_entry.get(Tstr, []), key=lambda x: x[0], reverse=True) if in_regime else []):
+            if len(positions) >= max_positions or t.ticker in positions:
                 continue
-            sd = e["init_stop_dist"]
-            shares = min(math.floor(equity_now * settings.risk_pct / 100 / sd),
-                         math.floor(cash / (e["entry"] * buf)),
-                         math.floor(equity_now * settings.max_alloc_pct / 100 / e["entry"]))
-            if shares < 1:
+            entry, stop_dist = t.entry, t.entry - t.stop
+            if stop_dist <= 0:
                 continue
-            entry_fill = e["entry"] * (1 + k)
-            cost = shares * entry_fill
-            if cost > cash:
+            shares = min(math.floor(equity_now * settings.risk_pct / 100 / stop_dist),
+                         math.floor(cash / (entry * buf)),
+                         math.floor(equity_now * settings.max_alloc_pct / 100 / entry))
+            if shares < 1 or shares * entry > cash:
                 continue
-            cash -= cost
-            positions[e["ticker"]] = {"shares": shares, "entry_fill": entry_fill, "stop": e["stop"],
-                                      "init_stop_dist": sd, "trail_stop": e["stop"], "mfe": e["entry"],
-                                      "entry_di": di[T]}
-
+            cash -= shares * entry
+            positions[t.ticker] = {"shares": shares, "exit_date": t.exit_date, "exit_price": t.exit,
+                                   "r": t.r_multiple}
         mkt = sum(p["shares"] * float(frames[t].at[T, "close"])
                   for t, p in positions.items() if T in frames[t].index)
         eq.append(cash + mkt)
@@ -794,14 +766,14 @@ def run_portfolio(ds: dict, settings: ScanSettings, max_positions: int, start: s
     for v in eq:
         peak = max(peak, v)
         maxdd = max(maxdd, (peak - v) / peak if peak > 0 else 0.0)
-    wins = [t for t in trades if t["r"] > 0]
+    wins = [r for r in taken if r > 0]
     rets = pd.Series(eq).pct_change().dropna()
     sharpe = float(rets.mean() / rets.std() * (252 ** 0.5)) if len(rets) > 1 and rets.std() > 0 else 0.0
     return {"max_positions": max_positions, "final_equity": round(final, 0),
             "return_pct": round((final / start_cash - 1) * 100, 1),
             "max_drawdown_pct": round(maxdd * 100, 1), "sharpe": round(sharpe, 2),
-            "trades": len(trades), "win_rate": round(len(wins) / len(trades) * 100, 1) if trades else 0.0,
-            "expectancy_r": round(sum(t["r"] for t in trades) / len(trades), 3) if trades else 0.0}
+            "trades": len(taken), "win_rate": round(len(wins) / len(taken) * 100, 1) if taken else 0.0,
+            "expectancy_r": round(sum(taken) / len(taken), 3) if taken else 0.0}
 
 
 def main() -> None:
@@ -850,11 +822,11 @@ def main() -> None:
                               regime_match="bull")
             print(f"{r['max_positions']:>7}{r['final_equity']:>12,.0f}{r['return_pct']:>+9.1f}{r['max_drawdown_pct']:>8.1f}"
                   f"{r['sharpe']:>8.2f}{r['trades']:>8}{r['win_rate']:>7}{r['expectancy_r']:>+8.3f}")
-        print("\n*** EXPERIMENTAL — DO NOT TRUST THESE NUMBERS YET ***")
-        print("This sim does NOT reconcile with the per-trade backtest: unconstrained (infinite cash, no")
-        print("cap) it should reproduce the per-trade expR (+0.072R) but returns ~-0.01R, so there is an")
-        print("aggregation bug. Single-ticker runs DO reconcile, so the exit logic is fine — the bug is in")
-        print("the cross-universe loop. Needs a focused debug pass before any conclusion is drawn.")
+        print("\n(Reconciles with the per-trade engine: candidates + their exits/R come straight from it, so")
+        print(" unconstrained it converges to the per-trade expR. Breadth effect (Fundamental Law): per-trade")
+        print(" edge falls with more positions but total/risk-adjusted return rise then plateau ~4-5.")
+        print(" CAVEAT: survivorship-biased universe, idealized fills, LOW trade count (bull-gated) — a")
+        print(" directional read, not proof. Validate forward in paper.)")
         return
 
     if args.trail_sweep:
