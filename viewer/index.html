@@ -198,10 +198,8 @@ function render(regime, engine, acct, journal, queue, notes, events, settings, e
     html += `<div class="card"><div class="spread"><h2 style="margin:0">Alert engine</h2>
       <span class="pill ${on?'bull':'unknown'}" style="font-size:11px">${on ? "ON" : "OFF"}</span></div>
       <div class="spread small" style="margin-top:8px">
-        <span class="muted">${status}</span>
-        <span>${mode}</span>
-        <span class="muted">last ${last}</span>
-        ${engine.last_status==="auto-traded"?`<span>opened ${engine.last_new_count}</span>`:""}
+        <span><span class="muted">${status}:</span> ${mode}</span>
+        <span class="muted">last ${last}${engine.last_status==="auto-traded"?` · opened ${engine.last_new_count}`:""}</span>
       </div></div>`;
   }
 
