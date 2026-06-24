@@ -74,7 +74,12 @@
   .evt:last-child { border-bottom: none; }
   .evt .tm { color: var(--muted); white-space: nowrap; }
   .evt .cat { color: var(--accent2); font-weight: 700; text-transform: uppercase; font-size: 9.5px; min-width: 52px; }
-  .note-body { font-size: 13.5px; line-height: 1.55; color: var(--text); }
+  /* prose reads better in natural case (the rest of the app is lowercased) + a comfortable measure */
+  .note-body { font-size: 14px; line-height: 1.62; color: var(--text); max-width: 62ch; text-transform: none; }
+  .note-body p { margin: 0 0 11px; }
+  .note-body p:last-child { margin-bottom: 0; }
+  .note-body ul { margin: 0 0 11px; padding-left: 18px; }
+  .note-body li { margin: 3px 0; }
   .note-body strong { color: var(--text); }
   .updated { text-align: center; color: var(--muted); font-size: 11px; margin-top: 4px; }
   .offline { background: rgba(248,113,113,.1); border: 1px solid rgba(248,113,113,.4); color: var(--red); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; }
@@ -183,6 +188,27 @@ function equityChart(rows, trades, start) {
       <span class="muted">${rows[0].date} → ${rows[last].date}</span>
       <span class="row" style="gap:9px"><span class="muted">▲ entry</span><span class="pos">● win</span><span class="neg">● loss</span></span>
     </div></div>`;
+}
+
+// Render the daily note as real paragraphs + bullet lists (not a <br> blob), strip em dashes.
+function noteHtml(raw) {
+  const inline = (s) => s
+    .replace(/ *— */g, ", ")                                  // no em dashes (standing rule)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/_([^_]+)_/g, "<span class='muted'>$1</span>");
+  const lines = (raw || "").replace(/^# .*$/m, "").replace(/^[-=]{3,}$/gm, "").split("\n");
+  let out = "", para = [], lis = [];
+  const flushPara = () => { if (para.length) { out += "<p>" + para.map(inline).join("<br>") + "</p>"; para = []; } };
+  const flushList = () => { if (lis.length) { out += "<ul>" + lis.map((l) => `<li>${inline(l)}</li>`).join("") + "</ul>"; lis = []; } };
+  for (const r of lines) {
+    const l = r.trim();
+    if (!l) { flushPara(); flushList(); continue; }   // blank line ends the current block
+    const bm = l.match(/^[-*•]\s+(.*)/);
+    if (bm) { flushPara(); lis.push(bm[1]); }          // a bullet: close any paragraph, collect into the list
+    else { flushList(); para.push(l.replace(/^#{1,6}\s*/, "")); }
+  }
+  flushPara(); flushList();
+  return out;
 }
 
 function render(regime, engine, acct, journal, queue, notes, events, settings, equity) {
@@ -314,13 +340,7 @@ function render(regime, engine, acct, journal, queue, notes, events, settings, e
   // daily note (the AI's observational read of the latest trading day)
   const latest = notes && notes.notes && notes.notes[0];
   if (latest) {
-    const md = latest.content
-      .replace(/^# .*$/m, "").replace(/^---+$/gm, "")
-      .replace(/^#{1,6}\s*(.*)$/gm, "<strong>$1</strong>")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/_([^_]+)_/g, "<span class='muted'>$1</span>")
-      .replace(/^[-*]\s+/gm, "• ").trim().replace(/\n/g, "<br>");
-    html += `<div class="card"><h2>Daily note · ${latest.date}</h2><div class="note-body">${md}</div></div>`;
+    html += `<div class="card"><h2>Daily note · ${latest.date}</h2><div class="note-body">${noteHtml(latest.content)}</div></div>`;
   }
 
   // engine activity: the audit trail of every move (regime, scan, propose, review, execute, skip)

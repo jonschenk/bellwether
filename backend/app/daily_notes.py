@@ -101,17 +101,19 @@ STILL OPEN ({len(positions)}):
 
 Write a SHORT daily note in markdown (~120–220 words):
 - Factually summarize the day: what opened, what closed and why, how the open positions are behaving.
-- Note anything observationally interesting — a hard stop, an extended/gapping name, the regime context,
+- Note anything observationally interesting: a hard stop, an extended/gapping name, the regime context,
   which strategy leg ran, an outlier R.
 - You may flag patterns to WATCH, but you MUST NOT make strategy recommendations or change orders: the
   sample here is tiny and statistically meaningless this early, so any such call would be noise. Stay
-  sample-aware. If little happened, say so briefly. Be honest and plain — no hype, no false confidence.
+  sample-aware. If little happened, say so briefly. Be honest and plain: no hype, no false confidence.
 - Position capacity scales with equity by a FIXED rule (shown above). You MAY note it as a plain FACT when
   it just changed or is close to a threshold (e.g. "equity crossed $2k, so capacity is now 5 slots"). Do
-  NOT frame it as advice, a target, or something to act on — it's automatic; you're only observing it.
+  NOT frame it as advice, a target, or something to act on: it's automatic; you're only observing it.
 
 Do NOT add a title or top header line (a date header is added for you). Start directly with the note.
-Use short paragraphs and at most a couple of "**bold**" sub-labels or "-" bullets — keep it scannable."""
+Use short paragraphs and at most a couple of "**bold**" sub-labels or "-" bullets, keep it scannable.
+Write plainly with normal sentence capitalization. Do NOT use em dashes (—); use commas, colons, or
+periods instead."""
 
 
 async def maybe_generate_eod() -> None:
