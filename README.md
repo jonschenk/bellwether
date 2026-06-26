@@ -55,6 +55,7 @@ Every result comes pre-sized to your account, the way a careful trader would do 
 - The stop sits below the recent noise, based on the stock's average true range.
 - Share count is whatever keeps your loss within a set percentage of capital (two percent by default) if the stop gets hit.
 - Exits are managed by a trailing stop and a time stop rather than a fixed target, so winners are given room to run.
+- The number of positions held at once scales with the account. A small account stays focused in a few names, and the count grows as the account does, up to a sensible cap.
 
 If a stock is too volatile to size safely for your account, it gets flagged instead of quietly dropped.
 
@@ -66,7 +67,7 @@ A separate command-line backtester is where strategies earn their place before t
 
 ## Monitor app
 
-A lightweight, mobile-friendly Monitor page gives you a read-only view of the account, open positions, the regime, the journal, the daily note, and the event log, plus the nightly review where you approve or skip proposed trades. It is built to run against a self-hosted backend so you can check in from your phone.
+A lightweight, mobile-friendly Monitor page gives you a read-only view of the account, open positions with their live stop and target levels, an equity curve, the regime, the journal, the daily note, and the event log, plus the nightly review where you approve or skip proposed trades. It is built to run against a self-hosted backend so you can check in from your phone.
 
 ## Setup
 
