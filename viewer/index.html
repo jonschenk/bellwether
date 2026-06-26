@@ -49,6 +49,20 @@
   tr:last-child td { border-bottom: none; }
   .act { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 3px 11px; font-size: 12px; cursor: pointer; }
   .act:hover { border-color: var(--red); color: var(--red); }
+  /* per-position block + OCO bracket gauge (trailing stop -> target). NB: .pos is the global green
+     text class, so the position-block wrapper is .posrow to avoid the collision. */
+  .posrow { padding: 12px 0; border-top: 1px solid var(--border); }
+  .posrow:first-of-type { margin-top: 4px; }
+  .posrow .tk { font-weight: 700; }
+  .posrow .px { color: var(--muted); font-weight: 400; margin-left: 5px; }
+  .brk { margin: 10px 0 7px; }
+  .brk-track { position: relative; height: 6px; border-radius: 4px; background: var(--raised); }
+  .brk-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 4px; opacity: .45; }
+  .brk-fill.pos { background: var(--green); } .brk-fill.neg { background: var(--red); }
+  .brk-tick { position: absolute; top: -2px; width: 2px; height: 10px; background: var(--muted); transform: translateX(-1px); border-radius: 1px; }
+  .brk-cur { position: absolute; top: 50%; width: 10px; height: 10px; border-radius: 50%; transform: translate(-50%, -50%); border: 2px solid var(--card); }
+  .brk-cur.pos { background: var(--green); } .brk-cur.neg { background: var(--red); }
+  .chip-lock { color: var(--green); background: rgba(74,222,128,.12); border: 1px solid rgba(74,222,128,.4); border-radius: 5px; padding: 1px 6px; font-size: 10px; margin-left: 6px; white-space: nowrap; }
   .strat { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px; white-space: nowrap; }
   .leader { color: var(--accent2); background: rgba(91,140,255,.12); }
   .meanrev { color: var(--yellow); background: rgba(250,204,21,.12); }
@@ -211,6 +225,36 @@ function noteHtml(raw) {
   return out;
 }
 
+// One open position: header, sub line, and an OCO bracket gauge (active stop -> target) with a live marker.
+function positionBlock(p) {
+  const lo = (p.trail_stop != null ? p.trail_stop : p.stop);    // active exit floor (ratchets up when trailing)
+  const hi = p.target;                                          // upside reference
+  const up = (p.unrealized || 0) >= 0;
+  const trailed = p.trail_stop != null && p.stop != null && p.trail_stop > p.stop + 0.005;
+  const locked = lo != null && p.entry != null && lo > p.entry; // stop above entry => a win is locked in
+  let gauge = "";
+  if (lo != null && hi != null && hi > lo) {
+    const pct = (v) => Math.max(0, Math.min(100, (v - lo) / (hi - lo) * 100));
+    const cur = pct(p.current), ent = pct(p.entry);
+    gauge = `<div class="brk"><div class="brk-track">
+      <div class="brk-fill ${up ? 'pos' : 'neg'}" style="width:${cur.toFixed(1)}%"></div>
+      <div class="brk-tick" style="left:${ent.toFixed(1)}%"></div>
+      <div class="brk-cur ${up ? 'pos' : 'neg'}" style="left:${cur.toFixed(1)}%"></div>
+    </div></div>`;
+  }
+  const lowLabel = lo == null ? "" : `${trailed ? "trail" : "stop"} $${fmt(lo)}${locked ? `<span class="chip-lock">win locked</span>` : ""}`;
+  const hiLabel = hi == null ? "" : ` · target $${fmt(hi)}`;
+  return `<div class="posrow">
+    <div class="spread"><span><span class="tk">${p.ticker}</span><span class="px">$${fmt(p.current)}</span></span>
+      <span class="${(p.r ?? 0) >= 0 ? 'pos' : 'neg'}">${p.r == null ? '·' : (p.r >= 0 ? '+' : '') + p.r + 'R'}</span></div>
+    <div class="spread small"><span class="muted">${p.shares} @ $${fmt(p.entry)}</span>
+      <span class="${up ? 'pos' : 'neg'}">${signed(p.unrealized)} (${p.unrealized_pct >= 0 ? '+' : ''}${p.unrealized_pct}%)</span></div>
+    ${gauge}
+    <div class="spread small"><span class="muted">${lowLabel}${hiLabel}</span>
+      <button class="act" onclick="closePos('${p.id}','${p.ticker}')">Close</button></div>
+  </div>`;
+}
+
 function render(regime, engine, acct, journal, queue, notes, events, settings, equity) {
   let html = "";
 
@@ -246,15 +290,7 @@ function render(regime, engine, acct, journal, queue, notes, events, settings, e
         ${full ? `<span class="muted">fully invested</span>` : `<span class="row" style="gap:6px"><span class="pos">${maxPos-used} free</span><span class="muted">·</span><span class="muted">$${fmt(acct.cash)} to deploy</span></span>`}
       </div>`;
     if (acct.positions && acct.positions.length) {
-      html += `<table style="margin-top:10px"><thead><tr><th>Ticker</th><th>Now</th><th>P&L</th><th>R</th><th></th></tr></thead><tbody>`;
-      for (const p of acct.positions) {
-        html += `<tr><td class="t">${p.ticker}<div class="muted small">${p.shares} @ $${fmt(p.entry)}${p.trail_stop?` · trail $${fmt(p.trail_stop)}`:""}</div></td>
-          <td>$${fmt(p.current)}</td>
-          <td class="${p.unrealized>=0?'pos':'neg'}">${signed(p.unrealized)}<div class="small ${p.unrealized>=0?'pos':'neg'}">${p.unrealized_pct>=0?'+':''}${p.unrealized_pct}%</div></td>
-          <td class="${(p.r??0)>=0?'pos':'neg'}">${p.r==null?'·':(p.r>=0?'+':'')+p.r+'R'}</td>
-          <td><button class="act" onclick="closePos('${p.id}','${p.ticker}')">Close</button></td></tr>`;
-      }
-      html += `</tbody></table>`;
+      html += `<div style="margin-top:6px">` + acct.positions.map(positionBlock).join("") + `</div>`;
     } else {
       html += `<div class="empty" style="margin-top:8px">No open positions.</div>`;
     }
