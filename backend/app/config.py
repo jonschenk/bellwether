@@ -42,6 +42,8 @@ class ScanSettings(BaseModel):
     mr_min_stretch_pct: float = Field(default=4.0, ge=0)  # require close >= this % below the 5-SMA (the validated selective lever; 0 = off)
     mr_require_uptrend: bool = Field(default=False)  # quality: only buy dips when 50>200 SMA stack AND the 200-SMA is rising
     donchian_lookback: int = Field(default=20, ge=5, le=120)  # breakout strategy: Donchian channel length (new N-day-high entry)
+    momentum_lookback: int = Field(default=252, ge=21, le=378)  # dual-momentum rotation: trailing-return lookback (12mo, the classic 12-1 momentum window; far more robust OOS than 6mo)
+    rotation_top_n: int = Field(default=10, ge=1, le=50)        # dual-momentum rotation: how many names to hold (10-20 diversifies away the top-5 blowup risk)
 
     # --- liquidity / price ---
     min_price: float = Field(default=15.0, ge=0)

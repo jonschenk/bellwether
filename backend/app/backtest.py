@@ -722,6 +722,75 @@ def run_sleeves(ds: dict, capital: float, slippage_bps: float, max_hold: int) ->
     return sleeves
 
 
+def run_dual_momentum(ds: dict, settings: ScanSettings, slippage_bps: float = 0.0) -> dict:
+    """Monthly DUAL-MOMENTUM rotation: rank the universe by trailing `momentum_lookback`-day return,
+    hold the top `rotation_top_n` names that ALSO have a positive trailing return (absolute momentum),
+    equal-weight, rebalanced on the first trading day of each month. Slots whose name fails the absolute
+    filter sit in CASH (the 'dual' downside protection) — so in a broad downturn the book goes largely
+    to cash on its own. This is a portfolio ROTATION, not a stop/target trade list, so it returns a
+    monthly-return series + the average number held. The signal is lagged one day (decided on the prior
+    close) so there is no lookahead."""
+    frames = ds["frames"]
+    lb, topn = settings.momentum_lookback, settings.rotation_top_n
+    k = slippage_bps / 10000.0
+    closes = pd.DataFrame({t: f["close"] for t, f in frames.items()}).sort_index()
+    mom = closes / closes.shift(lb) - 1.0
+    idx = closes.index
+    periods = idx.to_period("M")
+    rebal = [idx[periods == p][0] for p in periods.unique()]   # first trading day of each month
+    monthly: dict[str, float] = {}
+    held_counts: list[int] = []
+    for i in range(len(rebal) - 1):
+        r, nxt = rebal[i], rebal[i + 1]
+        rloc = idx.get_loc(r)
+        if rloc - 1 < lb:
+            continue
+        sig = mom.iloc[rloc - 1]                       # decided on the PRIOR close (no lookahead)
+        sig = sig[sig.notna() & (sig > 0)]             # absolute-momentum filter: positive trailing return only
+        picks = list(sig.sort_values(ascending=False).head(topn).index)
+        held_counts.append(len(picks))
+        key = f"{r.year}-{r.month:02d}"
+        rets = []
+        for t in picks:
+            c0, c1 = closes.at[r, t], closes.at[nxt, t]
+            if pd.notna(c0) and pd.notna(c1) and c0 > 0:
+                rets.append((c1 * (1 - k)) / (c0 * (1 + k)) - 1.0)
+        # unfilled slots (fewer than topn qualify) are cash (0) — the defensive feature
+        monthly[key] = sum(rets + [0.0] * (topn - len(rets))) / topn
+    return {"monthly": monthly, "avg_held": round(sum(held_counts) / len(held_counts), 1) if held_counts else 0.0}
+
+
+def _rotation_stats(monthly: dict) -> dict:
+    """Performance of a monthly-return series: CAGR, annualized Sharpe, max drawdown %, monthly win rate."""
+    rets = [r for _, r in sorted(monthly.items())]
+    n = len(rets)
+    if n == 0:
+        return {"months": 0}
+    eq, curve = 1.0, []
+    for r in rets:
+        eq *= (1 + r); curve.append(eq)
+    mean = sum(rets) / n
+    std = (sum((x - mean) ** 2 for x in rets) / (n - 1)) ** 0.5 if n > 1 else 0.0
+    peak = maxdd = curve[0]
+    maxdd = 0.0
+    for v in curve:
+        peak = max(peak, v)
+        maxdd = max(maxdd, (peak - v) / peak)
+    return {
+        "months": n,
+        "total_return": round((eq - 1) * 100, 1),
+        "cagr": round((eq ** (12.0 / n) - 1) * 100, 1),
+        "sharpe": round(mean / std * (12 ** 0.5), 2) if std > 0 else 0.0,
+        "max_drawdown_pct": round(maxdd * 100, 1),
+        "monthly_winrate": round(sum(1 for r in rets if r > 0) / n * 100, 1),
+    }
+
+
+def _split_monthly(monthly: dict, split: str) -> tuple[dict, dict]:
+    sp = split[:7]   # compare on 'YYYY-MM'
+    return ({m: r for m, r in monthly.items() if m < sp}, {m: r for m, r in monthly.items() if m >= sp})
+
+
 def _regime_day_counts(regime: pd.Series | None, start: str, split: str | None = None) -> dict:
     """How the trading days split across regimes (overall, and train/test if a split is given)."""
     if regime is None:
@@ -850,8 +919,11 @@ def main() -> None:
     p.add_argument("--sweep-positions", action="store_true",
                    help="with --portfolio: sweep max-positions 2..8 to see how the slot count drives return/drawdown")
     p.add_argument("--sleeves", action="store_true",
-                   help="compare the router vs each standalone strategy (leader/meanrev/breakout) OOS, with a "
-                        "monthly-return correlation matrix (the 'beat or diversify' decision support; use with --split)")
+                   help="compare the router vs each standalone strategy (leader/meanrev/breakout/dual-momentum) OOS, "
+                        "with a monthly-return correlation matrix (the 'beat or diversify' decision support; use --split)")
+    p.add_argument("--dual-momentum", dest="dual_momentum", action="store_true",
+                   help="run the monthly dual-momentum rotation standalone (rank by trailing return, hold top-N with "
+                        "positive absolute momentum, else cash); reports CAGR/Sharpe/maxDD%% (use --split for OOS)")
     args = p.parse_args()
     cands = MEANREV_CANDIDATES if args.strategy == "mean_reversion" else CANDIDATES
     bps = args.slippage_bps
@@ -918,8 +990,28 @@ def main() -> None:
         print("(lets winners run) so watch whether it trades fewer-but-bigger. (Survivorship-biased + idealized.)")
         return
 
+    if args.dual_momentum:
+        dm = run_dual_momentum(ds, ScanSettings(capital=args.capital), bps)
+        print(f"\n=== Dual-momentum rotation | top {ScanSettings().rotation_top_n} of {ds['names']} names | "
+              f"{ScanSettings().momentum_lookback}d lookback | {bps}bps | {args.start} -> {args.end} ===")
+        print(f"avg names held: {dm['avg_held']} (cash fills the rest when fewer qualify)")
+        def _dm_line(label, m):
+            st = _rotation_stats(m)
+            if not st.get("months"):
+                print(f"{label:<8} (no months)"); return
+            print(f"{label:<8} months {st['months']:>3} | CAGR {st['cagr']:>6}% | Sharpe {st['sharpe']:>5} | "
+                  f"maxDD {st['max_drawdown_pct']:>5}% | monthly win {st['monthly_winrate']:>5}% | total {st['total_return']:+}%")
+        if args.split:
+            tr, te = _split_monthly(dm["monthly"], args.split)
+            _dm_line("train", tr); _dm_line("TEST", te)
+        else:
+            _dm_line("all", dm["monthly"])
+        print("\n(Hypothesis only — survivorship-biased universe, idealized fills. Validate forward in paper.)")
+        return
+
     if args.sleeves:
         sleeves = run_sleeves(ds, args.capital, bps, args.max_hold)
+        dm = run_dual_momentum(ds, ScanSettings(capital=args.capital), bps)
         order = ["router", "leader_pullback", "mean_reversion", "breakout"]
         print(f"\n=== Sleeve comparison | {ds['names']} names | {bps}bps slippage | {args.start} -> {args.end} ===")
         if args.split:
@@ -940,15 +1032,29 @@ def main() -> None:
                 if not s.get("trades"):
                     print(f"{name:<18}{'0':>7}"); continue
                 print(f"{name:<18}{s['trades']:>7}{s['win_rate']:>7}{s['expectancy_r']:>+8.3f}{s['profit_factor']:>6}{s['max_drawdown_r']:>7}{s['total_r']:>+8.1f}")
-        # monthly-return correlation: low correlation to the router = diversifying, even if comparable
+        # dual-momentum is a rotation (no per-trade R), so report its own metrics
+        print(f"\ndual_momentum (rotation, top {ScanSettings().rotation_top_n}, {ScanSettings().momentum_lookback}d, avg held {dm['avg_held']}):")
+        def _dm_line(label, m):
+            st = _rotation_stats(m)
+            if not st.get("months"):
+                print(f"  {label:<6} (no months)"); return
+            print(f"  {label:<6} CAGR {st['cagr']:>6}% | Sharpe {st['sharpe']:>5} | maxDD {st['max_drawdown_pct']:>5}% | monthly win {st['monthly_winrate']:>5}%")
+        if args.split:
+            tr, te = _split_monthly(dm["monthly"], args.split)
+            _dm_line("train", tr); _dm_line("TEST", te)
+        else:
+            _dm_line("all", dm["monthly"])
+        # monthly-return correlation across ALL sleeves (rotation vs trade-sleeves: scale-invariant)
+        corr_order = order + ["dual_momentum"]
         mr = {name: _monthly_r(sleeves[name]) for name in order}
+        mr["dual_momentum"] = dm["monthly"]
         months = sorted(set().union(*[set(d) for d in mr.values()]))
-        corr = pd.DataFrame({name: [mr[name].get(m, 0.0) for m in months] for name in order}, index=months).corr()
+        corr = pd.DataFrame({name: [mr[name].get(m, 0.0) for m in months] for name in corr_order}, index=months).corr()
         print("\nMonthly-return correlation (lower vs router = more diversifying):")
-        print(f"{'':<18}" + "".join(f"{n[:8]:>10}" for n in order))
-        for n in order:
-            print(f"{n:<18}" + "".join(f"{corr.loc[n, m]:>10.2f}" for m in order))
-        print("\nKeep a sleeve if it BEATS the router on test expR/PF/DD, OR is comparable but lowly")
+        print(f"{'':<16}" + "".join(f"{n[:9]:>11}" for n in corr_order))
+        for n in corr_order:
+            print(f"{n:<16}" + "".join(f"{corr.loc[n, m]:>11.2f}" for m in corr_order))
+        print("\nKeep a sleeve if it BEATS the router on test risk-adjusted return, OR is comparable but lowly")
         print("correlated (adds diversification). Survivorship-biased + idealized fills — paper-prove the survivors.")
         return
 
