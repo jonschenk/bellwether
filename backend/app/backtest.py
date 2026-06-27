@@ -339,6 +339,22 @@ def _signal_mask_meanrev(ind: pd.DataFrame, s: ScanSettings) -> pd.Series:
     return mask
 
 
+def _signal_mask_breakout(ind: pd.DataFrame, s: ScanSettings) -> pd.Series:
+    """Donchian / turtle breakout: the close makes a new high vs the highest high of the prior
+    `donchian_lookback` bars, in a liquid name that's above its 200-SMA (only breakouts inside a
+    long-term uptrend). The channel uses `.shift(1)` so it's built from PRIOR bars only (as-of
+    correct). This is the deliberate OPPOSITE of leader-pullback: it buys strength / new highs
+    rather than dips, so it selects different entries and pairs with the ATR trailing exit (ride
+    the trend, no fixed target). A genuinely different, trend-following sleeve."""
+    n = s.donchian_lookback
+    channel_high = ind["high"].rolling(n, min_periods=n).max().shift(1)
+    return (
+        (ind["close"] > s.min_price) & (ind["close"] <= s.max_price) & (ind["avgvol"] > s.min_avg_volume)
+        & (ind["close"] > ind["sma200"])    # quality: only breakouts in a long-term uptrend
+        & (ind["close"] >= channel_high)     # the breakout: a new `n`-day closing high
+    )
+
+
 def _simulate_meanrev(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int, slippage_bps: float = 0.0,
                       exit_mode: str = "fixed", trail_mult: float | None = None) -> Trade | None:
     """Enter next open; exit on the reversion (a close back above the 5-SMA), a protective ATR
@@ -390,6 +406,11 @@ def _trades_for(
     if strategy == "mean_reversion":
         sig = _signal_mask_meanrev(ind, s)
         simulate = _simulate_meanrev
+    elif strategy == "breakout":
+        sig = _signal_mask_breakout(ind, s)
+        simulate = _simulate
+        if exit_mode == "fixed":
+            exit_mode = "trail"   # turtle-style: breakouts ride the ATR trailing stop (no fixed cap)
     else:
         sig = _signal_mask(ind, rs.reindex(ind.index), s)
         if s.require_market_uptrend and market_up is not None:
@@ -675,6 +696,32 @@ def run_router(ds: dict, policy: dict = DEFAULT_ROUTER, capital: float = DEFAULT
     return {"stats": _stats(combined), "trades": combined, "legs": legs}
 
 
+def _monthly_r(trades: list[Trade]) -> dict[str, float]:
+    """Summed R-multiple per calendar month (keyed 'YYYY-MM', by exit date) — a sleeve's return
+    stream, used to measure how correlated two strategies' month-to-month results are."""
+    import collections
+    m: dict[str, float] = collections.defaultdict(float)
+    for t in trades:
+        m[t.exit_date[:7]] += t.r_multiple
+    return dict(m)
+
+
+def run_sleeves(ds: dict, capital: float, slippage_bps: float, max_hold: int) -> dict[str, list[Trade]]:
+    """Run the regime router AND each standalone strategy on the SAME dataset, so they can be
+    compared head-to-head. Each standalone uses its router-leg variation (the tuned version), so
+    'breakout' is the only genuinely new sleeve here. Returns {name: trades}."""
+    sleeves = {"router": run_router(ds, DEFAULT_ROUTER, capital, max_hold, slippage_bps)["trades"]}
+    specs = {
+        "leader_pullback": DEFAULT_ROUTER["bull"][1],
+        "mean_reversion": DEFAULT_ROUTER["chop"][1],
+        "breakout": {},  # default breakout params (donchian_lookback default)
+    }
+    for name, ov in specs.items():
+        s = ScanSettings(capital=capital, **ov)
+        sleeves[name] = run_on_dataset(ds, s, max_hold, name, slippage_bps)["trades"]
+    return sleeves
+
+
 def _regime_day_counts(regime: pd.Series | None, start: str, split: str | None = None) -> dict:
     """How the trading days split across regimes (overall, and train/test if a split is given)."""
     if regime is None:
@@ -789,7 +836,7 @@ def main() -> None:
     p.add_argument("--compare", action="store_true", help="sweep the built-in candidate variations")
     p.add_argument("--split", default=None, help="YYYY-MM-DD: out-of-sample split (train < split, test >=)")
     p.add_argument("--csv", default=None, help="write trades to this CSV path (single-variation run)")
-    p.add_argument("--strategy", default="leader_pullback", choices=["leader_pullback", "mean_reversion"])
+    p.add_argument("--strategy", default="leader_pullback", choices=["leader_pullback", "mean_reversion", "breakout"])
     p.add_argument("--slippage-bps", type=float, default=5.0, help="per-side slippage in bps (default 5; 0 = frictionless)")
     p.add_argument("--router", action="store_true", help="run the regime router (bull->leader, chop->meanrev, bear->cash)")
     p.add_argument("--exit-mode", default="fixed", choices=["fixed", "breakeven", "trail"],
@@ -802,6 +849,9 @@ def main() -> None:
                    help="portfolio simulation: shared cash + slots + per-position cap + trailing exits (real constraints)")
     p.add_argument("--sweep-positions", action="store_true",
                    help="with --portfolio: sweep max-positions 2..8 to see how the slot count drives return/drawdown")
+    p.add_argument("--sleeves", action="store_true",
+                   help="compare the router vs each standalone strategy (leader/meanrev/breakout) OOS, with a "
+                        "monthly-return correlation matrix (the 'beat or diversify' decision support; use with --split)")
     args = p.parse_args()
     cands = MEANREV_CANDIDATES if args.strategy == "mean_reversion" else CANDIDATES
     bps = args.slippage_bps
@@ -866,6 +916,40 @@ def main() -> None:
                 print(f"{mode:<12}{tr.get('trades',0):>6}{trx:>11}{te.get('trades',0):>6}{tex:>10}{str(tepf):>8}{tedd:>8}")
         print("\nRead: does breakeven/trail beat fixed on TEST expR AND drawdown? Trail removes the target")
         print("(lets winners run) so watch whether it trades fewer-but-bigger. (Survivorship-biased + idealized.)")
+        return
+
+    if args.sleeves:
+        sleeves = run_sleeves(ds, args.capital, bps, args.max_hold)
+        order = ["router", "leader_pullback", "mean_reversion", "breakout"]
+        print(f"\n=== Sleeve comparison | {ds['names']} names | {bps}bps slippage | {args.start} -> {args.end} ===")
+        if args.split:
+            print(f"Out-of-sample @ {args.split} (train < split, test >=)\n")
+            print(f"{'sleeve':<18}{'trN':>6}{'trainExpR':>11}{'teN':>6}{'testExpR':>10}{'testPF':>8}{'testDD':>8}{'testTotR':>9}")
+            for name in order:
+                tr, te = _split_stats(sleeves[name], args.split)
+                trx = f"{tr['expectancy_r']:+.3f}" if tr.get("trades") else "—"
+                tex = f"{te['expectancy_r']:+.3f}" if te.get("trades") else "—"
+                tepf = te.get("profit_factor", "—") if te.get("trades") else "—"
+                tedd = f"{te['max_drawdown_r']:.1f}" if te.get("trades") else "—"
+                tetot = f"{te['total_r']:+.1f}" if te.get("trades") else "—"
+                print(f"{name:<18}{tr.get('trades',0):>6}{trx:>11}{te.get('trades',0):>6}{tex:>10}{str(tepf):>8}{tedd:>8}{tetot:>9}")
+        else:
+            print(f"{'sleeve':<18}{'trades':>7}{'win%':>7}{'expR':>8}{'PF':>6}{'maxDD':>7}{'totR':>8}")
+            for name in order:
+                s = _stats(sleeves[name])
+                if not s.get("trades"):
+                    print(f"{name:<18}{'0':>7}"); continue
+                print(f"{name:<18}{s['trades']:>7}{s['win_rate']:>7}{s['expectancy_r']:>+8.3f}{s['profit_factor']:>6}{s['max_drawdown_r']:>7}{s['total_r']:>+8.1f}")
+        # monthly-return correlation: low correlation to the router = diversifying, even if comparable
+        mr = {name: _monthly_r(sleeves[name]) for name in order}
+        months = sorted(set().union(*[set(d) for d in mr.values()]))
+        corr = pd.DataFrame({name: [mr[name].get(m, 0.0) for m in months] for name in order}, index=months).corr()
+        print("\nMonthly-return correlation (lower vs router = more diversifying):")
+        print(f"{'':<18}" + "".join(f"{n[:8]:>10}" for n in order))
+        for n in order:
+            print(f"{n:<18}" + "".join(f"{corr.loc[n, m]:>10.2f}" for m in order))
+        print("\nKeep a sleeve if it BEATS the router on test expR/PF/DD, OR is comparable but lowly")
+        print("correlated (adds diversification). Survivorship-biased + idealized fills — paper-prove the survivors.")
         return
 
     if args.router:
