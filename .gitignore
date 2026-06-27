@@ -39,6 +39,9 @@ TODO.md
 # project context for Claude (keep private)
 CLAUDE.md
 
+# operating guide for the OpenCode sub-agent (keep private)
+AGENTS.md
+
 # personal strategy variations, trade journal, and the iteration doc (keep private)
 backend/strategies.json
 backend/journal.json
