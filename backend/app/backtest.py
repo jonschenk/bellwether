@@ -40,6 +40,13 @@ log = logging.getLogger(__name__)
 
 MIN_BARS = 220          # need ~1y of history before a name is eligible (matches the live scan)
 DEFAULT_MAX_HOLD = 10   # time-stop: close at this many trading days if neither stop nor target hits
+
+# Progressive ("exponential") trail tighten knobs, read by the "trail_tighten" exit mode. As a trade
+# extends in profit (R reached by the high-water mark), the ATR trail multiple decays from the base
+# (atr_stop_mult) toward TIGHTEN_FLOOR: eff = floor + (base - floor)*exp(-K * R_reached). Module-level
+# so the exit experiment can sweep them without threading new knobs through every call site.
+TIGHTEN_K = 0.7
+TIGHTEN_FLOOR = 0.5
 # High default capital so the affordability/price ceiling doesn't distort a strategy backtest.
 # R-multiple stats are capital-independent anyway; capital only affects the max_price filter.
 DEFAULT_CAPITAL = 1_000_000
@@ -278,7 +285,7 @@ def _simulate(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int, slipp
     rps = entry - init_stop
     if trail_mult is None:
         trail_mult = s.atr_stop_mult   # reuse the initial stop's multiple — no new tuned knob
-    use_target = exit_mode != "trail"  # pure trail lets winners run (no fixed cap)
+    use_target = exit_mode not in ("trail", "trail_tighten")  # trail modes let winners run (no fixed cap)
 
     cur_stop, highest, be_armed = init_stop, entry, False
     exit_price = exit_reason = exit_loc = None
@@ -286,7 +293,7 @@ def _simulate(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int, slipp
     for j in range(loc + 1, last + 1):
         lo, hi = float(ind["low"].iloc[j]), float(ind["high"].iloc[j])
         if lo <= cur_stop:  # cur_stop reflects only prior bars (no lookahead)
-            reason = "stop" if cur_stop <= init_stop else ("trail" if exit_mode == "trail" else "breakeven")
+            reason = "stop" if cur_stop <= init_stop else ("trail" if exit_mode in ("trail", "trail_tighten") else "breakeven")
             exit_price, exit_reason, exit_loc = cur_stop, reason, j
             break
         if use_target and hi >= target:
@@ -296,6 +303,14 @@ def _simulate(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int, slipp
         if exit_mode == "trail":
             highest = max(highest, hi)
             cur_stop = max(cur_stop, highest - trail_mult * atrv)
+        elif exit_mode == "trail_tighten":
+            # the further the high-water mark is above entry (in R), the tighter the ATR trail —
+            # an exponential decay from the base multiple toward TIGHTEN_FLOOR. Locks more of a big
+            # run, at the cost of getting shaken out of an extended winner sooner (the tradeoff we test).
+            highest = max(highest, hi)
+            r_reached = (highest - entry) / rps if rps > 0 else 0.0
+            eff_mult = TIGHTEN_FLOOR + (trail_mult - TIGHTEN_FLOOR) * math.exp(-TIGHTEN_K * max(0.0, r_reached))
+            cur_stop = max(cur_stop, highest - eff_mult * atrv)
         elif exit_mode == "breakeven" and not be_armed and hi >= entry + rps:
             cur_stop, be_armed = max(cur_stop, entry), True
     if exit_price is None:  # time-stop at the close of the last bar in the window
