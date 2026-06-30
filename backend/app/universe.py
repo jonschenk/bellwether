@@ -14,6 +14,7 @@ import datetime as dt
 import json
 import logging
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -170,17 +171,26 @@ def bulk_quote(symbols: list[str], batch: int = 200) -> dict[str, tuple]:
     out: dict[str, tuple] = {}
     for i in range(0, len(symbols), batch):
         chunk = symbols[i : i + batch]
-        try:
-            resp = yfd.get(QUOTE_URL, params={"symbols": ",".join(chunk)})
-            for q in resp.json().get("quoteResponse", {}).get("result", []):
-                sym = q.get("symbol")
-                if sym:
-                    # Use the higher of the 3-month and 10-day average volume so a
-                    # recent volume surge doesn't get pre-screened out.
-                    vol = max(q.get("averageDailyVolume3Month") or 0, q.get("averageDailyVolume10Day") or 0)
-                    out[sym] = (q.get("regularMarketPrice"), vol or None)
-        except Exception:
-            log.exception("Bulk quote batch failed at offset %d", i)
+        # One retry: a single transient Yahoo timeout/rate-limit used to silently DROP a whole
+        # batch (~200 names) from that scan. A quick retry clears the common transient blip; only
+        # a persistent failure skips the batch (and the next scan re-pulls it anyway).
+        for attempt in range(2):
+            try:
+                resp = yfd.get(QUOTE_URL, params={"symbols": ",".join(chunk)})
+                for q in resp.json().get("quoteResponse", {}).get("result", []):
+                    sym = q.get("symbol")
+                    if sym:
+                        # Use the higher of the 3-month and 10-day average volume so a
+                        # recent volume surge doesn't get pre-screened out.
+                        vol = max(q.get("averageDailyVolume3Month") or 0, q.get("averageDailyVolume10Day") or 0)
+                        out[sym] = (q.get("regularMarketPrice"), vol or None)
+                break
+            except Exception:
+                if attempt == 0:
+                    log.warning("Bulk quote batch at offset %d failed, retrying once", i)
+                    time.sleep(1.5)
+                else:
+                    log.exception("Bulk quote batch failed at offset %d (after retry)", i)
     return out
 
 
