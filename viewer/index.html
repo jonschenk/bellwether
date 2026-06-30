@@ -95,6 +95,8 @@
   .note-body ul { margin: 0 0 11px; padding-left: 18px; }
   .note-body li { margin: 3px 0; }
   .note-body strong { color: var(--text); }
+  .note-body .nh { font-weight: 700; color: var(--text); margin: 15px 0 5px; }
+  .note-body .nh:first-child { margin-top: 0; }
   .updated { text-align: center; color: var(--muted); font-size: 11px; margin-top: 4px; }
   .offline { background: rgba(248,113,113,.1); border: 1px solid rgba(248,113,113,.4); color: var(--red); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; }
   /* settings drawer */
@@ -138,7 +140,7 @@ let engineState = null;
 
 async function load() {
   try {
-    const [regime, engine, acct, journal, queue, notes, events, settings, equity] = await Promise.all([
+    const [regime, engine, acct, journal, queue, notes, events, settings, equity, weekly] = await Promise.all([
       api("/api/regime").catch(()=>({available:false})),
       api("/api/alerts/engine").catch(()=>null),
       api("/api/paper/account").catch(()=>null),
@@ -148,10 +150,11 @@ async function load() {
       api("/api/events?n=16").catch(()=>({events:[]})),
       api("/api/settings").catch(()=>({})),
       api("/api/equity-log").catch(()=>({rows:[]})),
+      api("/api/weekly-notes").catch(()=>({notes:[]})),
     ]);
     engineState = engine;
     document.getElementById("offline").style.display = "none";
-    render(regime, engine, acct, journal, queue, notes, events, settings, equity);
+    render(regime, engine, acct, journal, queue, notes, events, settings, equity, weekly);
     document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) {
     document.getElementById("offline").style.display = "block";
@@ -217,6 +220,8 @@ function noteHtml(raw) {
   for (const r of lines) {
     const l = r.trim();
     if (!l) { flushPara(); flushList(); continue; }   // blank line ends the current block
+    const hm = l.match(/^#{2,6}\s+(.*)/);              // a "## " sub-heading: its own bold line
+    if (hm) { flushPara(); flushList(); out += `<p class="nh">${inline(hm[1])}</p>`; continue; }
     const bm = l.match(/^[-*•]\s+(.*)/);
     if (bm) { flushPara(); lis.push(bm[1]); }          // a bullet: close any paragraph, collect into the list
     else { flushList(); para.push(l.replace(/^#{1,6}\s*/, "")); }
@@ -255,7 +260,7 @@ function positionBlock(p) {
   </div>`;
 }
 
-function render(regime, engine, acct, journal, queue, notes, events, settings, equity) {
+function render(regime, engine, acct, journal, queue, notes, events, settings, equity, weekly) {
   let html = "";
 
   // engine status
@@ -371,6 +376,12 @@ function render(regime, engine, acct, journal, queue, notes, events, settings, e
       html += `<div class="empty">No trades logged yet.</div>`;
     }
     html += `</div>`;
+  }
+
+  // weekly review (the AI's rollup + dev note, the level above the daily note)
+  const wk = weekly && weekly.notes && weekly.notes[0];
+  if (wk) {
+    html += `<div class="card"><h2>Weekly review · ${wk.week}</h2><div class="note-body">${noteHtml(wk.content)}</div></div>`;
   }
 
   // daily note (the AI's observational read of the latest trading day)

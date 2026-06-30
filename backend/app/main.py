@@ -30,6 +30,7 @@ from . import router
 from . import risk
 from . import eventlog
 from . import daily_notes
+from . import weekly_review
 from . import schwab
 from .live import live
 from .scanner import refresh_results, scan_market
@@ -332,6 +333,19 @@ async def equity_log_view() -> dict:
 async def daily_notes_view() -> dict:
     """The observational daily journal notes (newest first)."""
     return {"notes": daily_notes.list_notes()}
+
+
+@app.get("/api/weekly-notes")
+async def weekly_notes_view() -> dict:
+    """The weekly reviews + dev notes (newest first)."""
+    return {"notes": weekly_review.list_notes()}
+
+
+@app.post("/api/weekly/build")
+async def weekly_build() -> dict:
+    """Manually generate the review for the most-recently-completed week (regenerates if present)."""
+    res = await weekly_review.maybe_generate_weekly(force=True)
+    return {**res, "notes": weekly_review.list_notes()}
 
 
 @app.get("/api/paper/account")
@@ -776,6 +790,7 @@ async def _alert_loop() -> None:
             # run post-close regardless of the engine, so the forward record keeps accruing).
             await asyncio.to_thread(equity_log.maybe_record_eod)
             await daily_notes.maybe_generate_eod()
+            await weekly_review.maybe_generate_weekly()  # Saturday rollup + dev note, self-dedups per ISO week
         except Exception:
             log.exception("alert engine cycle failed")
             eventlog.log_event("error", "alert loop tick failed (see server log)")
