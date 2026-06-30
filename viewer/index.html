@@ -151,10 +151,11 @@ async function load() {
       api("/api/settings").catch(()=>({})),
       api("/api/equity-log").catch(()=>({rows:[]})),
       api("/api/weekly-notes").catch(()=>({notes:[]})),
+      api("/api/portfolio/insight").catch(()=>({})),
     ]);
     engineState = engine;
     document.getElementById("offline").style.display = "none";
-    render(regime, engine, acct, journal, queue, notes, events, settings, equity, weekly);
+    render(regime, engine, acct, journal, queue, notes, events, settings, equity, weekly, insight);
     document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) {
     document.getElementById("offline").style.display = "block";
@@ -260,7 +261,7 @@ function positionBlock(p) {
   </div>`;
 }
 
-function render(regime, engine, acct, journal, queue, notes, events, settings, equity, weekly) {
+function render(regime, engine, acct, journal, queue, notes, events, settings, equity, weekly, insight) {
   let html = "";
 
   // engine status
@@ -314,6 +315,19 @@ function render(regime, engine, acct, journal, queue, notes, events, settings, e
 
   // equity curve: money vs time with entry/exit markers (fills in as post-close snapshots accrue)
   html += equityChart(equity && equity.rows, journal && journal.trades, acct && acct.starting_cash);
+
+  // portfolio risk read (Claude's read of the open book; refreshes daily or on demand)
+  if (acct && (acct.positions || []).length) {
+    const ins = insight && insight.content ? insight : null;
+    const ago = ins && ins.generated_at ? new Date(ins.generated_at).toLocaleString() : null;
+    html += `<div class="card"><div class="spread"><h2 style="margin:0">Portfolio risk</h2>
+      <button class="act" id="insightBtn" onclick="refreshInsight()">refresh</button></div>`;
+    html += ins
+      ? `<div class="note-body" style="margin-top:8px">${noteHtml(ins.content)}</div>
+         <div class="updated" style="text-align:left;margin-top:6px">as of ${ago}</div>`
+      : `<div class="empty" style="margin-top:8px">no read yet. tap refresh for a risk read of the open book.</div>`;
+    html += `</div>`;
+  }
 
   // nightly review queue: the human approves/skips tomorrow's proposed tickets
   if (queue) {
@@ -409,6 +423,13 @@ async function decide(id, decision, ticker) {
   if (!confirm(`${verb} ${ticker} for the next open?`)) return;
   try { await api("/api/queue/decide", {method:"POST", body: JSON.stringify({id, decision})}); load(); }
   catch(e){ alert("Failed: " + e.message); }
+}
+
+async function refreshInsight() {
+  const b = document.getElementById("insightBtn");
+  if (b) { b.textContent = "reading…"; b.disabled = true; }
+  try { await api("/api/portfolio/insight", {method:"POST"}); } catch(e) {}
+  load();   // the 5s render shows the fresh read
 }
 
 // ---- the defensive actions ----

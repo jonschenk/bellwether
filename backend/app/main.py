@@ -31,6 +31,7 @@ from . import risk
 from . import eventlog
 from . import daily_notes
 from . import weekly_review
+from . import portfolio_insight
 from . import schwab
 from .live import live
 from .scanner import refresh_results, scan_market
@@ -346,6 +347,18 @@ async def weekly_build() -> dict:
     """Manually generate the review for the most-recently-completed week (regenerates if present)."""
     res = await weekly_review.maybe_generate_weekly(force=True)
     return {**res, "notes": weekly_review.list_notes()}
+
+
+@app.get("/api/portfolio/insight")
+async def portfolio_insight_view() -> dict:
+    """The cached portfolio risk read."""
+    return portfolio_insight.latest()
+
+
+@app.post("/api/portfolio/insight")
+async def portfolio_insight_build() -> dict:
+    """Regenerate the portfolio risk read over the current open book."""
+    return await portfolio_insight.generate()
 
 
 @app.get("/api/paper/account")
@@ -791,6 +804,7 @@ async def _alert_loop() -> None:
             await asyncio.to_thread(equity_log.maybe_record_eod)
             await daily_notes.maybe_generate_eod()
             await weekly_review.maybe_generate_weekly()  # Saturday rollup + dev note, self-dedups per ISO week
+            await portfolio_insight.maybe_generate_daily()  # daily risk read of the open book, self-dedups per ET day
         except Exception:
             log.exception("alert engine cycle failed")
             eventlog.log_event("error", "alert loop tick failed (see server log)")
