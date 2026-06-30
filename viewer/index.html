@@ -140,7 +140,7 @@ let engineState = null;
 
 async function load() {
   try {
-    const [regime, engine, acct, journal, queue, notes, events, settings, equity, weekly] = await Promise.all([
+    const [regime, engine, acct, journal, queue, notes, events, settings, equity, weekly, insight] = await Promise.all([
       api("/api/regime").catch(()=>({available:false})),
       api("/api/alerts/engine").catch(()=>null),
       api("/api/paper/account").catch(()=>null),
