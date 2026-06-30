@@ -50,6 +50,10 @@ TICK_SECONDS = 5  # how often the bracket monitor re-marks open positions
 # fills are exempt (you get your price or better — that's the point of using one).
 SLIPPAGE_BPS = 5.0
 
+# Idle cash isn't dead money at a real brokerage: it sweeps into a money-market fund / T-bills.
+# Model that so the paper book mirrors reality and dry powder still earns its keep. Posted once per
+# calendar day on the cash balance, at roughly the current T-bill yield.
+CASH_APY = 0.045
 
 
 def _load() -> dict:
@@ -57,6 +61,7 @@ def _load() -> dict:
         try:
             acct = json.loads(ACCOUNT_PATH.read_text())
             acct.setdefault("orders", {})  # resting MOO/limit orders (added later; back-compat)
+            acct.setdefault("interest_earned", 0.0)  # cumulative money-market interest on idle cash
             return acct
         except (json.JSONDecodeError, OSError):
             log.exception("paper_account.json unreadable; starting fresh")
@@ -70,7 +75,8 @@ def _save(acct: dict) -> None:
 def reset(capital: float) -> dict:
     """Start a fresh paper account with `capital` cash, no open positions, no resting orders.
     (Closed trades stay in the journal as history.)"""
-    acct = {"starting_cash": round(capital, 2), "cash": round(capital, 2), "positions": {}, "orders": {}}
+    acct = {"starting_cash": round(capital, 2), "cash": round(capital, 2), "positions": {}, "orders": {},
+            "interest_earned": 0.0, "last_interest_date": _et_today()}
     _save(acct)
     return account()
 
@@ -404,6 +410,38 @@ async def monitor_loop() -> None:
         await asyncio.sleep(TICK_SECONDS)
 
 
+def maybe_post_interest() -> dict | None:
+    """Post money-market interest on idle cash, once per calendar day (deduped by last_interest_date).
+    Models a real brokerage cash sweep at ~CASH_APY so dry powder isn't a dead 0%. Credits every
+    calendar day since the last posting (covers weekends + downtime). No-op if already posted today,
+    on the first run (just anchors the date, no baseline period to credit), or with no cash. Safe to
+    call every loop tick. Returns the account snapshot when it posts, else None."""
+    acct = _load()
+    today = alert_engine._now_et().date()
+    last = acct.get("last_interest_date")
+    if last == today.isoformat():
+        return None
+    if not last:  # first ever call: anchor the date, nothing to credit yet
+        acct["last_interest_date"] = today.isoformat()
+        _save(acct)
+        return None
+    try:
+        days = max(1, (today - dt.date.fromisoformat(last)).days)
+    except (ValueError, TypeError):
+        days = 1
+    cash = acct.get("cash") or 0.0
+    interest = round(cash * CASH_APY / 365 * days, 2)
+    acct["last_interest_date"] = today.isoformat()
+    if interest > 0:
+        acct["cash"] = round(cash + interest, 2)
+        acct["interest_earned"] = round((acct.get("interest_earned") or 0.0) + interest, 2)
+        _save(acct)
+        log.info("paper cash interest: +$%.2f (%dd @ %.1f%% on $%.2f)", interest, days, CASH_APY * 100, cash)
+        return account()
+    _save(acct)
+    return None
+
+
 def account() -> dict:
     """Marked account snapshot: cash, open positions with unrealized P&L, equity."""
     acct = _load()
@@ -447,6 +485,8 @@ def account() -> dict:
         "realized_pnl": round(total_pnl - open_pnl, 2),  # closed-trade P&L = total minus unrealized
         "total_pnl": total_pnl,
         "slots": slots,
+        "cash_apy": CASH_APY,
+        "interest_earned": round(acct.get("interest_earned") or 0.0, 2),
         "positions": positions,
         "orders": orders,
     }

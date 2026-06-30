@@ -173,7 +173,17 @@ function equityChart(rows, trades, start) {
   const W=320, H=150, padL=8, padR=8, padT=12, padB=18, last=rows.length-1;
   const eq = rows.map(r=>r.equity);
   const base = (start!=null) ? start : eq[0];
-  const eqMin = Math.min(...eq, base), eqMax = Math.max(...eq, base), span=(eqMax-eqMin)||1;
+  // SPY benchmark: the same starting capital put into SPY on day one, normalized to start at `base`.
+  const spyRaw = rows.map(r => (typeof r.spy === "number" && isFinite(r.spy)) ? r.spy : null);
+  const spy0 = spyRaw.find(v => v != null);
+  let spyNorm = null, spyPct = null;
+  if (spy0) {
+    let lastSpy = spy0;
+    spyNorm = spyRaw.map(v => { if (v != null) lastSpy = v; return base * (lastSpy / spy0); });
+    spyPct = (spyNorm[last] / base - 1) * 100;
+  }
+  const fitVals = spyNorm ? eq.concat(spyNorm, [base]) : eq.concat([base]);
+  const eqMin = Math.min(...fitVals), eqMax = Math.max(...fitVals), span=(eqMax-eqMin)||1;
   const lo = eqMin - span*0.08, hi = eqMax + span*0.08, range = hi-lo;
   const X = i => padL + (i/last) * (W-padL-padR);
   const Y = v => padT + (1-(v-lo)/range) * (H-padT-padB);
@@ -181,6 +191,7 @@ function equityChart(rows, trades, start) {
   const stroke = up ? "var(--green)" : "var(--red)";
   const baseY = (base>=lo && base<=hi) ? Y(base) : null;
   const line = rows.map((r,i)=>`${i?'L':'M'}${X(i).toFixed(1)} ${Y(r.equity).toFixed(1)}`).join(' ');
+  const spyLine = spyNorm ? spyNorm.map((v,i)=>`${i?'L':'M'}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join(' ') : null;
   const fillBase = baseY!=null ? baseY : (H-padB);
   const area = `M${X(0).toFixed(1)} ${fillBase.toFixed(1)} `
     + rows.map((r,i)=>`L${X(i).toFixed(1)} ${Y(r.equity).toFixed(1)}`).join(' ')
@@ -194,17 +205,22 @@ function equityChart(rows, trades, start) {
     if (t.status==='closed' && t.closed_at) { const i=at(t.closed_at.slice(0,10)); if(i!=null){ const x=X(i),y=Y(eq[i]); const c=t.outcome==='win'?'var(--green)':t.outcome==='loss'?'var(--red)':'var(--muted)'; marks += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="${c}"/>`; } }
   }
   const cur=eq[last], pnl=cur-base, pct = base?((cur/base-1)*100):0;
+  const vs = (spyPct!=null) ? (pct - spyPct) : null;
   return `<div class="card"><div class="spread"><h2 style="margin:0">Equity curve</h2>
     <span class="small ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':''}$${fmt(pnl)} (${pct>=0?'+':''}${pct.toFixed(1)}%)</span></div>
+    ${vs!=null?`<div class="spread small" style="margin-top:3px">
+      <span class="muted">vs S&P 500 (SPY ${spyPct>=0?'+':''}${spyPct.toFixed(1)}%)</span>
+      <span class="${vs>=0?'pos':'neg'}">${vs>=0?'+':''}${vs.toFixed(1)}% vs market</span></div>`:""}
     <svg viewBox="0 0 ${W} ${H}" width="100%" style="height:auto;display:block;margin-top:8px;overflow:visible">
       ${baseY!=null?`<line x1="${padL}" y1="${baseY.toFixed(1)}" x2="${W-padR}" y2="${baseY.toFixed(1)}" stroke="var(--border)" stroke-dasharray="3 3" stroke-width="1"/>`:""}
       <path d="${area}" fill="${stroke}" opacity="0.09"/>
+      ${spyLine?`<path d="${spyLine}" fill="none" stroke="var(--muted)" stroke-width="1.3" stroke-dasharray="4 3" opacity="0.85"/>`:""}
       <path d="${line}" fill="none" stroke="${stroke}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
       ${marks}
     </svg>
     <div class="spread small" style="margin-top:5px">
       <span class="muted">${rows[0].date} → ${rows[last].date}</span>
-      <span class="row" style="gap:9px"><span class="muted">▲ entry</span><span class="pos">● win</span><span class="neg">● loss</span></span>
+      <span class="row" style="gap:9px">${spyLine?`<span class="row" style="gap:4px"><svg width="14" height="6" style="overflow:visible"><line x1="0" y1="3" x2="14" y2="3" stroke="var(--muted)" stroke-width="1.3" stroke-dasharray="3 2"/></svg><span class="muted">SPY</span></span>`:""}<span class="muted">▲ entry</span><span class="pos">● win</span><span class="neg">● loss</span></span>
     </div></div>`;
 }
 
@@ -295,6 +311,7 @@ function render(regime, engine, acct, journal, queue, notes, events, settings, e
         <span class="pill ${full?'chop':'bull'}" style="font-size:11px">${used}/${maxPos} slots</span>
         ${full ? `<span class="muted">fully invested</span>` : `<span class="row" style="gap:6px"><span class="pos">${maxPos-used} free</span><span class="muted">·</span><span class="muted">$${fmt(acct.cash)} to deploy</span></span>`}
       </div>`;
+    if (acct.cash_apy) html += `<div class="small muted" style="margin-top:6px">idle cash earns ${(acct.cash_apy*100).toFixed(1)}% (money-market sweep)${acct.interest_earned?` · +$${fmt(acct.interest_earned)} so far`:""}</div>`;
     if (acct.positions && acct.positions.length) {
       html += `<div style="margin-top:6px">` + acct.positions.map(positionBlock).join("") + `</div>`;
     } else {

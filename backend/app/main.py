@@ -802,6 +802,7 @@ async def _alert_loop() -> None:
             # Daily equity-curve snapshot + the observational daily note (both self-dedup per ET day,
             # run post-close regardless of the engine, so the forward record keeps accruing).
             await asyncio.to_thread(equity_log.maybe_record_eod)
+            await asyncio.to_thread(paper.maybe_post_interest)  # daily money-market sweep on idle cash
             await daily_notes.maybe_generate_eod()
             await weekly_review.maybe_generate_weekly()  # Saturday rollup + dev note, self-dedups per ISO week
             await portfolio_insight.maybe_generate_daily()  # daily risk read of the open book, self-dedups per ET day
