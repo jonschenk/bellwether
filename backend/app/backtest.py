@@ -704,7 +704,7 @@ def run_router(ds: dict, policy: dict = DEFAULT_ROUTER, capital: float = DEFAULT
             for t, ind in ds["frames"].items():
                 leg.extend(_trades_for(t, ind, ds["rs"][t], s, max_hold,
                                        ds.get("market_up"), ds.get("breadth"), strat, slippage_bps,
-                                       regime_gate=gate))
+                                       regime_gate=gate, exit_mode="trail_tighten"))
             legs[reg] = {"strategy": strat, "stats": _stats(leg)}
             combined.extend(leg)
     combined.sort(key=lambda x: x.entry_date)
@@ -841,7 +841,8 @@ def run_portfolio(ds: dict, settings: ScanSettings, max_positions: int, start: s
     lo_b, hi_b = pd.Timestamp(start), pd.Timestamp(end)
 
     # Candidate trades from the VALIDATED per-trade engine — identical entries/exits/R.
-    cand = run_on_dataset(ds, settings, max_hold, strategy, slippage_bps, exit_mode="trail")["trades"]
+    # trail_tighten matches the LIVE paper exit (progressive tighten), so the portfolio sim agrees.
+    cand = run_on_dataset(ds, settings, max_hold, strategy, slippage_bps, exit_mode="trail_tighten")["trades"]
     by_entry: dict = {}
     for t in cand:
         ed = pd.Timestamp(t.entry_date)
@@ -924,8 +925,10 @@ def main() -> None:
     p.add_argument("--strategy", default="leader_pullback", choices=["leader_pullback", "mean_reversion", "breakout"])
     p.add_argument("--slippage-bps", type=float, default=5.0, help="per-side slippage in bps (default 5; 0 = frictionless)")
     p.add_argument("--router", action="store_true", help="run the regime router (bull->leader, chop->meanrev, bear->cash)")
-    p.add_argument("--exit-mode", default="fixed", choices=["fixed", "breakeven", "trail"],
-                   help="stop management for leader_pullback: fixed | breakeven (BE after +1R) | trail (ATR chandelier, no cap)")
+    p.add_argument("--exit-mode", default="trail_tighten",
+                   choices=["fixed", "breakeven", "trail", "trail_tighten"],
+                   help="stop management for leader_pullback: fixed | breakeven (BE after +1R) | trail "
+                        "(ATR chandelier, no cap) | trail_tighten (progressive tighten, the LIVE default)")
     p.add_argument("--exit-compare", action="store_true",
                    help="head-to-head: fixed vs breakeven vs trail on the bull-leg variation (use with --split for OOS)")
     p.add_argument("--trail-sweep", action="store_true",
