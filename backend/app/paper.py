@@ -20,6 +20,8 @@ import datetime as dt
 import json
 import logging
 import math
+import os
+import threading
 import uuid
 from pathlib import Path
 
@@ -45,6 +47,14 @@ def _market_open() -> bool:
 
 ACCOUNT_PATH = Path(__file__).resolve().parents[1] / "paper_account.json"
 TICK_SECONDS = 5  # how often the bracket monitor re-marks open positions
+
+# One lock for every load->mutate->save on the ledger. Writers run on BOTH the event-loop thread
+# (endpoints, the monitor tick) and worker threads (the morning execute's to_thread buy, the daily
+# interest post), so without it a slow quote fetch inside the monitor tick could save a stale
+# snapshot over a buy/close that landed mid-tick (lost update on the money file). RLock because
+# the monitor's bracket path calls close() re-entrantly on the same thread. Never held across a
+# network call: quotes are always resolved before acquiring it.
+_LEDGER_LOCK = threading.RLock()
 
 # Per-side slippage haircut on market fills (matches the backtester's 5bps default), so the paper
 # scoreboard isn't rosier than reality: a market buy pays UP, a sell/stop/target fills LOWER. Limit
@@ -80,7 +90,12 @@ def _load() -> dict:
 
 
 def _save(acct: dict) -> None:
-    ACCOUNT_PATH.write_text(json.dumps(acct, indent=2))
+    # Atomic write (tmp + rename): a truncate-in-place write can be read half-written by another
+    # thread (equity log, API polls), and _load's "unreadable -> start fresh" guard would then hand
+    # a ZEROED account to the next writer. os.replace makes readers see old-or-new, never torn.
+    tmp = ACCOUNT_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(acct, indent=2))
+    os.replace(tmp, ACCOUNT_PATH)
 
 
 def reset(capital: float) -> dict:
@@ -88,7 +103,8 @@ def reset(capital: float) -> dict:
     (Closed trades stay in the journal as history.)"""
     acct = {"starting_cash": round(capital, 2), "cash": round(capital, 2), "positions": {}, "orders": {},
             "interest_earned": 0.0, "last_interest_date": _et_today()}
-    _save(acct)
+    with _LEDGER_LOCK:
+        _save(acct)
     return account()
 
 
@@ -155,11 +171,12 @@ def buy(stock: dict, variation_id: str | None = None, variation_params: dict | N
     if not fill:
         return {"error": "Could not get a fill price (market may be closed)."}
     fill = fill * (1 + SLIPPAGE_BPS / 10000)  # market buy pays up (slippage)
-    acct = _load()
-    res = _open_position(acct, stock, fill, variation_id, variation_params)
-    if res.get("error"):
-        return res
-    _save(acct)
+    with _LEDGER_LOCK:
+        acct = _load()
+        res = _open_position(acct, stock, fill, variation_id, variation_params)
+        if res.get("error"):
+            return res
+        _save(acct)
     return account()
 
 
@@ -173,25 +190,26 @@ def place_order(stock: dict, order_type: str, limit_price: float | None = None,
         return {"error": "No share plan for this setup."}
     if order_type == "limit" and not limit_price:
         limit_price = plan.get("entry")
-    acct = _load()
-    oid = uuid.uuid4().hex[:8]
-    acct["orders"][oid] = {
-        "id": oid,
-        "ticker": stock["ticker"],
-        "name": stock.get("name", ""),
-        "type": order_type,                       # "moo" | "limit"
-        "limit_price": round(limit_price, 2) if (order_type == "limit" and limit_price) else None,
-        "shares": shares,
-        "stop": plan.get("stop"),
-        "target": plan.get("target"),
-        "stock": stock,                           # snapshot so the fill can open + journal it
-        "variation_id": variation_id,             # carried to the fill so the journal tags it right
-        "variation_params": variation_params,
-        "placed_at": _now(),
-        # the ET session date if placed during market hours, else None (placed while closed)
-        "placed_session": _et_today() if _market_open() else None,
-    }
-    _save(acct)
+    with _LEDGER_LOCK:
+        acct = _load()
+        oid = uuid.uuid4().hex[:8]
+        acct["orders"][oid] = {
+            "id": oid,
+            "ticker": stock["ticker"],
+            "name": stock.get("name", ""),
+            "type": order_type,                       # "moo" | "limit"
+            "limit_price": round(limit_price, 2) if (order_type == "limit" and limit_price) else None,
+            "shares": shares,
+            "stop": plan.get("stop"),
+            "target": plan.get("target"),
+            "stock": stock,                           # snapshot so the fill can open + journal it
+            "variation_id": variation_id,             # carried to the fill so the journal tags it right
+            "variation_params": variation_params,
+            "placed_at": _now(),
+            # the ET session date if placed during market hours, else None (placed while closed)
+            "placed_session": _et_today() if _market_open() else None,
+        }
+        _save(acct)
     return account()
 
 
@@ -206,10 +224,11 @@ def submit(stock: dict, settings, variation_id: str | None = None, variation_par
 
 
 def cancel_order(order_id: str) -> dict:
-    acct = _load()
-    if acct["orders"].pop(order_id, None) is None:
-        return {"error": "No such resting order."}
-    _save(acct)
+    with _LEDGER_LOCK:
+        acct = _load()
+        if acct["orders"].pop(order_id, None) is None:
+            return {"error": "No such resting order."}
+        _save(acct)
     return account()
 
 
@@ -267,20 +286,26 @@ def auto_execute(results: list[dict], max_positions: int = 5, exclude: set[str] 
 
 def close(trade_id: str, exit_price: float | None = None, reason: str = "manual") -> dict:
     """Close an open paper position at exit_price (default: current live price)."""
-    acct = _load()
-    pos = acct["positions"].get(trade_id)
-    if pos is None:
-        return {"error": "No such open paper position."}
-    px = exit_price or _quote([pos["ticker"]]).get(pos["ticker"]) or pos["current"]
-    px = round(px * (1 - SLIPPAGE_BPS / 10000), 2)  # sell/stop/target fills lower (slippage)
-    acct["cash"] = round(acct["cash"] + pos["shares"] * px, 2)
-    closed = None
-    try:
-        closed = journal.close_trade(trade_id, round(px, 2), exit_reason=reason, mae=pos.get("mae"), mfe=pos.get("mfe"))
-    except (KeyError, ValueError):
-        log.exception("journal close failed for %s", trade_id)
-    del acct["positions"][trade_id]
-    _save(acct)
+    if exit_price is None:
+        # Resolve the live quote BEFORE taking the ledger lock (never hold it across a network call).
+        peek = _load()["positions"].get(trade_id)
+        if peek is None:
+            return {"error": "No such open paper position."}
+        exit_price = _quote([peek["ticker"]]).get(peek["ticker"]) or peek["current"]
+    with _LEDGER_LOCK:
+        acct = _load()
+        pos = acct["positions"].get(trade_id)
+        if pos is None:
+            return {"error": "No such open paper position."}
+        px = round(exit_price * (1 - SLIPPAGE_BPS / 10000), 2)  # sell/stop/target fills lower (slippage)
+        acct["cash"] = round(acct["cash"] + pos["shares"] * px, 2)
+        closed = None
+        try:
+            closed = journal.close_trade(trade_id, round(px, 2), exit_reason=reason, mae=pos.get("mae"), mfe=pos.get("mfe"))
+        except (KeyError, ValueError):
+            log.exception("journal close failed for %s", trade_id)
+        del acct["positions"][trade_id]
+        _save(acct)
     # Push a phone alert when the engine closed it (not for manual closes — you did those yourself).
     if reason in ("stop", "target", "trail", "time") and closed:
         r, pnl = closed.get("r_multiple"), closed.get("pnl")
@@ -364,6 +389,12 @@ def _mark_and_bracket(acct: dict, prices: dict[str, float]) -> bool:
             _save(acct)
             close(tid, pos["target"], reason="target")
             acct.update(_load())
+        elif _trading_days_held(pos["opened_at"]) >= max_hold:
+            # time-stop applies on this path too — otherwise a position with no stop/target
+            # (or trailing turned off) could sit open forever
+            _save(acct)
+            close(tid, px, reason="time")
+            acct.update(_load())
     return changed
 
 
@@ -408,18 +439,25 @@ def _process_orders(acct: dict, prices: dict[str, float]) -> bool:
 
 async def monitor_loop() -> None:
     """Background task: every few seconds, mark open positions, run the bracket, and fill any
-    resting MOO/limit orders. Idle when there are no positions and no orders."""
+    resting MOO/limit orders. Idle when there are no positions and no orders.
+
+    Ordering matters: quotes are fetched FIRST (slow, network), and only then is the account
+    loaded — fresh, under the ledger lock — for the mutate+save. Loading before the quote fetch
+    would leave a seconds-wide window where a buy/close landing mid-tick gets clobbered by this
+    tick's save of the stale snapshot (a real lost-update on the money file)."""
     while True:
         try:
-            acct = _load()
-            tickers = list({p["ticker"] for p in acct["positions"].values()}
-                           | {o["ticker"] for o in acct.get("orders", {}).values()})
+            peek = _load()  # read-only peek just to learn which tickers need quotes
+            tickers = list({p["ticker"] for p in peek["positions"].values()}
+                           | {o["ticker"] for o in peek.get("orders", {}).values()})
             if tickers:
                 prices = await asyncio.to_thread(_quote, tickers)
-                changed = _mark_and_bracket(acct, prices)
-                changed = _process_orders(acct, prices) or changed
-                if changed:
-                    _save(acct)
+                with _LEDGER_LOCK:
+                    acct = _load()  # reload fresh: the quote fetch may have taken seconds
+                    changed = _mark_and_bracket(acct, prices)
+                    changed = _process_orders(acct, prices) or changed
+                    if changed:
+                        _save(acct)
         except Exception:
             log.exception("paper monitor tick failed")
         await asyncio.sleep(TICK_SECONDS)
@@ -431,29 +469,30 @@ def maybe_post_interest() -> dict | None:
     calendar day since the last posting (covers weekends + downtime). No-op if already posted today,
     on the first run (just anchors the date, no baseline period to credit), or with no cash. Safe to
     call every loop tick. Returns the account snapshot when it posts, else None."""
-    acct = _load()
-    today = alert_engine._now_et().date()
-    last = acct.get("last_interest_date")
-    if last == today.isoformat():
-        return None
-    if not last:  # first ever call: anchor the date, nothing to credit yet
+    with _LEDGER_LOCK:
+        acct = _load()
+        today = alert_engine._now_et().date()
+        last = acct.get("last_interest_date")
+        if last == today.isoformat():
+            return None
+        if not last:  # first ever call: anchor the date, nothing to credit yet
+            acct["last_interest_date"] = today.isoformat()
+            _save(acct)
+            return None
+        try:
+            days = max(1, (today - dt.date.fromisoformat(last)).days)
+        except (ValueError, TypeError):
+            days = 1
+        cash = acct.get("cash") or 0.0
+        interest = round(cash * CASH_APY / 365 * days, 2)
         acct["last_interest_date"] = today.isoformat()
+        if interest > 0:
+            acct["cash"] = round(cash + interest, 2)
+            acct["interest_earned"] = round((acct.get("interest_earned") or 0.0) + interest, 2)
+            _save(acct)
+            log.info("paper cash interest: +$%.2f (%dd @ %.1f%% on $%.2f)", interest, days, CASH_APY * 100, cash)
+            return account()
         _save(acct)
-        return None
-    try:
-        days = max(1, (today - dt.date.fromisoformat(last)).days)
-    except (ValueError, TypeError):
-        days = 1
-    cash = acct.get("cash") or 0.0
-    interest = round(cash * CASH_APY / 365 * days, 2)
-    acct["last_interest_date"] = today.isoformat()
-    if interest > 0:
-        acct["cash"] = round(cash + interest, 2)
-        acct["interest_earned"] = round((acct.get("interest_earned") or 0.0) + interest, 2)
-        _save(acct)
-        log.info("paper cash interest: +$%.2f (%dd @ %.1f%% on $%.2f)", interest, days, CASH_APY * 100, cash)
-        return account()
-    _save(acct)
     return None
 
 

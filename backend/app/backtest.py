@@ -43,10 +43,13 @@ DEFAULT_MAX_HOLD = 10   # time-stop: close at this many trading days if neither 
 
 # Progressive ("exponential") trail tighten knobs, read by the "trail_tighten" exit mode. As a trade
 # extends in profit (R reached by the high-water mark), the ATR trail multiple decays from the base
-# (atr_stop_mult) toward TIGHTEN_FLOOR: eff = floor + (base - floor)*exp(-K * R_reached). Module-level
-# so the exit experiment can sweep them without threading new knobs through every call site.
+# (atr_stop_mult) toward a FLOOR FRACTION of it: eff = floor + (base - floor)*exp(-K * R_reached),
+# floor = trail_mult * TIGHTEN_FLOOR_FRAC. The floor is a fraction (not an absolute ATR multiple) so
+# it stays in lockstep with paper.py's live formula (floor = 1/3 of the initial stop distance) for
+# ANY atr_stop_mult — at the default 1.5 it equals the validated 0.5xATR. Module-level so the exit
+# experiment can sweep them without threading new knobs through every call site.
 TIGHTEN_K = 0.7
-TIGHTEN_FLOOR = 0.5
+TIGHTEN_FLOOR_FRAC = 1.0 / 3.0
 # High default capital so the affordability/price ceiling doesn't distort a strategy backtest.
 # R-multiple stats are capital-independent anyway; capital only affects the max_price filter.
 DEFAULT_CAPITAL = 1_000_000
@@ -305,11 +308,13 @@ def _simulate(ind: pd.DataFrame, loc: int, s: ScanSettings, max_hold: int, slipp
             cur_stop = max(cur_stop, highest - trail_mult * atrv)
         elif exit_mode == "trail_tighten":
             # the further the high-water mark is above entry (in R), the tighter the ATR trail —
-            # an exponential decay from the base multiple toward TIGHTEN_FLOOR. Locks more of a big
-            # run, at the cost of getting shaken out of an extended winner sooner (the tradeoff we test).
+            # an exponential decay from the base multiple toward its floor fraction. Locks more of a
+            # big run, at the cost of getting shaken out of an extended winner sooner (the tradeoff
+            # we tested). Mirrors paper.py's live formula exactly.
             highest = max(highest, hi)
             r_reached = (highest - entry) / rps if rps > 0 else 0.0
-            eff_mult = TIGHTEN_FLOOR + (trail_mult - TIGHTEN_FLOOR) * math.exp(-TIGHTEN_K * max(0.0, r_reached))
+            floor_mult = trail_mult * TIGHTEN_FLOOR_FRAC
+            eff_mult = floor_mult + (trail_mult - floor_mult) * math.exp(-TIGHTEN_K * max(0.0, r_reached))
             cur_stop = max(cur_stop, highest - eff_mult * atrv)
         elif exit_mode == "breakeven" and not be_armed and hi >= entry + rps:
             cur_stop, be_armed = max(cur_stop, entry), True

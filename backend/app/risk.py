@@ -156,7 +156,7 @@ def target_slots(equity: float, settings: ScanSettings) -> int:
 
     Equity, NOT free cash, is the driver on purpose: sizing off idle cash would nudge the system to
     manufacture trades just to stay invested (a classic way to bleed an account). With the defaults
-    (base 3, $1k/slot, ceiling 8) this yields the historical 4 at ~$1k and grows as the account compounds.
+    (base 3, $1k/slot, ceiling 6) this yields the historical 4 at ~$1k and grows as the account compounds.
     A drawdown below a $1k boundary de-risks by one slot; it only gates NEW entries, never closes a held one.
     (Backtest breadth plateaus ~4-5, so the ceiling is a conservative 6 — re-tune from real paper data.)"""
     step = settings.capital_per_slot

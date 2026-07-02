@@ -15,6 +15,7 @@ R = (exit - entry) / risk-per-share. Expectancy = average R across closed trades
 import datetime as dt
 import json
 import logging
+import os
 import uuid
 from pathlib import Path
 
@@ -41,7 +42,10 @@ def _load() -> list[dict]:
 
 
 def _save(trades: list[dict]) -> None:
-    STORE_PATH.write_text(json.dumps(trades, indent=2))
+    # Atomic write (tmp + rename), so a concurrent reader never sees a half-written journal.
+    tmp = STORE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(trades, indent=2))
+    os.replace(tmp, STORE_PATH)
 
 
 # Indicators snapshotted at entry, so outcomes can be sliced by the entry conditions later

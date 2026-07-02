@@ -16,6 +16,7 @@ Proposals persist to proposals.json (gitignored) so the queue survives a backend
 import datetime as dt
 import json
 import logging
+import os
 import uuid
 from pathlib import Path
 
@@ -41,7 +42,10 @@ def _load() -> list[dict]:
 
 
 def _save(proposals: list[dict]) -> None:
-    STORE_PATH.write_text(json.dumps(proposals, indent=2))
+    # Atomic write (tmp + rename), so a concurrent reader never sees a half-written queue.
+    tmp = STORE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(proposals, indent=2))
+    os.replace(tmp, STORE_PATH)
 
 
 def _pending(proposals: list[dict]) -> list[dict]:

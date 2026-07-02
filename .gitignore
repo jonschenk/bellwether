@@ -54,3 +54,4 @@ events.jsonl
 earnings_cache.json
 equity_log.json
 analysis/
+*.json.tmp
