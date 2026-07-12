@@ -1,8 +1,19 @@
 # Bellwether
 
+_A regime-adaptive, AI-assisted swing-trading research system. A full-stack app, a no-lookahead backtester, local and hosted AI, and a paper broker, built from scratch and validated on years of market history._
+
 A desktop and self-hosted app that scans the whole US stock market for short-term swing trade setups, the kind you'd hold for two to five days. It reads the overall market regime, runs the strategy that fits that regime, uses AI to judge the best candidates, sizes each trade to your account, and can run as a hands-light advisor that proposes trades for you to approve. Everything trades on paper through a built-in simulator. It places no real orders, and a human approves every trade. The scan and its local AI run free on your own machine, with no API keys or accounts required for the core features.
 
 ![Scanner dashboard](docs/screenshots/dashboard.png)
+
+## Engineering highlights
+
+- A regime router that reads the broad market and switches between a trend strategy, a mean-reversion strategy, and cash, developed and validated on years of history with an out-of-sample split.
+- A command-line backtester with strict no-lookahead accounting, slippage modeling, train and test splits, and head-to-head variation sweeps. Every strategy change earns its place here before it goes live.
+- A progressive trailing-stop exit, tested across roughly 660 names and 19 years of data, that cut simulated drawdown by about a third against a plain trailing stop while improving expectancy.
+- A two-layer AI design: free local models handle the cheap, high-volume work, and a hosted model is reserved for account-aware judgment, with a firm rule that the running app never rewrites its own strategy.
+- A paper broker modeled on a real broker's order shape, with a slippage haircut, trailing-stop management, and a trade journal scored by expectancy per strategy variation.
+- Runs as a native desktop app or headless on a small server, with a separate mobile Monitor for checking in from a phone.
 
 ## What it does
 
@@ -121,10 +132,24 @@ FastAPI backend
    backtest   research tool, validated offline
 ```
 
+## Results and honest assessment
+
+Bellwether ran as a live forward paper-trading test and was studied against years of backtests. The most valuable thing it produced is an honest read on where a small systematic strategy's edge actually comes from.
+
+- The measurable edge is mostly regime exposure and risk management, not stock-selection skill. Sitting out downtrends and controlling losses did more than any single entry signal, which is close to what efficient-market intuition would predict.
+- Exit logic mattered more than entry selection. Letting winners run under a trailing stop, and tightening that stop as a trade extends, moved the results more than tuning which stocks to buy.
+- The edge is thin and the caveats are real. Backtests favor stocks that still exist today, fills are idealized, and a live paper sample of a few weeks is far too small to conclude anything from. The honest expectation was never to beat the market by a wide margin, it was to match it with smaller drawdowns, if anything.
+
+What makes those findings trustworthy is the discipline around them: no-lookahead backtesting, out-of-sample splits, a strict separation between the AI that proposes changes and the deliberate, version-controlled commits that make them, and a rule to defer any strategy change until a meaningful number of trades had closed. The project met its goal, which was to build the full system end to end and evaluate it honestly. It stands as a finished research build rather than a running service.
+
 ## What this is not
 
 This is a research and decision-support tool. It finds, analyzes, and paper-trades setups so you can study them and build a track record. It does not place real-money trades, it does not connect to a live brokerage to move money, and a human approves every proposed trade. It is not financial advice. Market data is from a free, unofficial source and will occasionally rate-limit or error, in which case you just run the scan again. Do your own homework before putting real money at risk.
 
-## Credits
+## Built with
 
-The app icon uses the bell from [Google's Noto Emoji](https://github.com/googlefonts/noto-emoji), licensed under Apache 2.0.
+FastAPI, React, Vite, and Electron, with market data from [yfinance](https://github.com/ranaroussi/yfinance), local models through [Ollama](https://ollama.com), and hosted analysis through the [Anthropic API](https://www.anthropic.com). The app icon is original, drawn from scratch with Pillow.
+
+## License
+
+Released under the MIT License. See [LICENSE](LICENSE).
