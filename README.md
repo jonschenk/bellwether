@@ -33,10 +33,10 @@ This router was developed and validated on years of historical data with an out-
 
 ## AI analysis
 
-AI is layered, with the cheap and free work done locally and the expensive judgment reserved for the moments that matter:
+The AI is a tiered, cost-aware pipeline. Cheap, high-volume work runs on a local model; a hosted model is reserved for the account-aware judgment that matters. Every call is retrieval-augmented, grounded in freshly fetched news, live prices, indicators, and current holdings rather than the model's training data, and the higher-stakes calls return structured output the app acts on directly:
 
-- Per card: a free local model (through [Ollama](https://ollama.com)) reads recent headlines for a name and gives a sentence or two plus a sentiment and confidence rating. Nothing leaves your computer.
-- Deep analysis: on demand, a hosted model (Claude by default) writes a fuller, account-aware case for one setup. The thesis, the bull case, the main risks, and how it fits your other holdings, ending in a Take, Wait, or Pass call. This is the one part that uses a paid model and runs only when you ask.
+- Per card: a free local model (through [Ollama](https://ollama.com)) reads recent headlines retrieved for a name and returns a sentence or two plus a sentiment and confidence score. It runs on device, so nothing leaves your computer.
+- Deep analysis: on demand, a hosted model (Claude by default) writes a fuller, account-aware case for one setup as structured output: the thesis, the bull case, the main risks, how it fits your other holdings, and a Take, Wait, or Pass call with a conviction score. This is the one part that uses a paid model and runs only when you ask.
 - Pick triage: when the app proposes trades, a hosted model ranks the candidates against each other and your account, and it has to argue both the bull case and the bear case for each name before it is allowed to recommend it. A name is only taken when the bull case survives the bear case.
 - Daily notes: after the close, a hosted model writes a short, observational note on the day. It summarizes what happened and flags things to watch, and it is deliberately barred from proposing strategy changes, since the sample is far too small early on.
 
@@ -145,6 +145,16 @@ What makes those findings trustworthy is the discipline around them: no-lookahea
 ## What this is not
 
 This is a research and decision-support tool. It finds, analyzes, and paper-trades setups so you can study them and build a track record. It does not place real-money trades, it does not connect to a live brokerage to move money, and a human approves every proposed trade. It is not financial advice. Market data is from a free, unofficial source and will occasionally rate-limit or error, in which case you just run the scan again. Do your own homework before putting real money at risk.
+
+## Tech stack and techniques
+
+Languages and frameworks: Python, FastAPI, asyncio, Pandas, NumPy, React, Vite, JavaScript, Electron.
+
+AI and LLM engineering: large language model orchestration (Anthropic Claude), local on-device inference (Ollama, Llama 3.2), tiered cost-aware model routing, prompt engineering, structured output generation, retrieval-augmented generation that grounds each call in freshly fetched news and live account state, an autonomous agent loop with human-in-the-loop approval, and a deliberate separation between the model that proposes strategy changes and the version-controlled commits that apply them.
+
+Quantitative and data: algorithmic trading strategy design, a no-lookahead backtesting engine, out-of-sample train and test validation, time-series and technical-indicator analysis, ATR-based risk management, fractional-Kelly position sizing, and expectancy and drawdown analytics.
+
+Systems and infrastructure: REST API design, real-time price streaming over WebSockets, a market-data ingestion and caching pipeline, concurrency control with atomic writes on the shared ledger, background schedulers and structured event logging, OAuth 2.0 with encrypted token storage, push notifications, and headless self-hosted deployment on a Raspberry Pi via systemd.
 
 ## Built with
 
